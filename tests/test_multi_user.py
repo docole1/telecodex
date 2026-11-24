@@ -195,6 +195,8 @@ class FakeCodex:
         self.started = False
         self.closed = False
         self.models: list[CodexModel] = []
+        self.thread_model: str | None = None
+        self.thread_effort: str | None = None
         self.working_directory = Path("/tmp")
         self.threads: list[CodexThread] = []
         self.select_calls: list[tuple[str, Path]] = []
@@ -376,9 +378,28 @@ class FakeCodex:
     def default_model(self, models: list[CodexModel]) -> str | None:
         return next((model.model for model in models if model.is_default), None)
 
+    async def current_model_settings(
+        self,
+        models: list[CodexModel],
+    ) -> tuple[str | None, str | None]:
+        model = (
+            self.thread_model
+            if self.state.thread_id
+            else None
+        ) or self.state.selected_model or self.default_model(models)
+        effort = (
+            self.thread_effort
+            if self.state.thread_id
+            else None
+        ) or self.state.selected_effort
+        return model, effort
+
     async def select_model(self, model: str | None, effort: str | None = None) -> None:
         self.state.selected_model = model
         self.state.selected_effort = effort
+        if self.state.thread_id:
+            self.thread_model = model
+            self.thread_effort = effort
 
     async def toggle_fast_mode(self) -> bool:
         if self.fast_error is not None:
@@ -5114,6 +5135,70 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_model_settings_use_active_thread_before_global_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = AppConfig(
+                telegram_bot_token="token",
+                telegram_allowed_user_ids=(101,),
+                workspace_root=workspace,
+                codex_bin="codex",
+                codex_model="gpt-6.2-sol",
+                network_access=False,
+                approval_policy="on-request",
+                shell_timeout_seconds=60,
+                database_file=workspace / "state.sqlite3",
+            )
+            store = RuntimeStateStore(config.database_file).for_user(101)
+            store.save(RuntimeState(thread_id="thread-existing", cwd=str(workspace)))
+            app_server = FakeAppServer(missing_thread=False)
+            app_server.responses["model/list"] = {
+                "data": [
+                    {
+                        "model": "gpt-6.2-sol",
+                        "displayName": "GPT-6.2-Sol",
+                        "isDefault": True,
+                    },
+                    {
+                        "model": "gpt6-luna",
+                        "displayName": "GPT-6-Luna",
+                        "isDefault": False,
+                        "defaultReasoningEffort": "medium",
+                    },
+                ],
+                "nextCursor": None,
+            }
+            app_server.responses["thread/read"] = {
+                "thread": {
+                    "id": "thread-existing",
+                    "model": "gpt6-luna",
+                    "reasoningEffort": "high",
+                }
+            }
+
+            async def no_status(_text: str, _command: object = None, _item_id: str | None = None) -> None:
+                return None
+
+            async def no_prompt(_method: str, _params: dict[str, Any]) -> dict[str, Any]:
+                return {}
+
+            with patch("telecodex.codex.session.CodexAppServer", return_value=app_server):
+                session = CodexSession(config, store, no_status, no_status, no_status, no_prompt)
+                models = await session.list_models()
+                model, effort = await session.current_model_settings(models)
+
+            self.assertEqual(model, "gpt6-luna")
+            self.assertEqual(effort, "high")
+            self.assertIn(
+                ("thread/read", {"threadId": "thread-existing"}),
+                app_server.requests,
+            )
+
+            store.save(RuntimeState())
+            model, effort = await session.current_model_settings(models)
+            self.assertEqual(model, "gpt-6.2-sol")
+            self.assertIsNone(effort)
+
     async def test_model_list_efforts_are_parsed_and_sent_on_turn_start(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -5269,6 +5354,121 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
                 IncomingCallback(6, "reset-model", 101, 101, message_id, f"m:{token}:r")
             )
             self.assertEqual((codex.state.selected_model, codex.state.selected_effort), (None, None))
+
+    async def test_model_picker_uses_active_thread_model_before_global_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AppConfig(
+                telegram_bot_token="token",
+                telegram_allowed_user_ids=(101,),
+                workspace_root=Path(temp_dir),
+                codex_bin="codex",
+                codex_model=None,
+                network_access=False,
+                approval_policy="on-request",
+                shell_timeout_seconds=60,
+                database_file=Path(temp_dir) / "state.sqlite3",
+            )
+            telegram = FakeTelegram()
+            codex = FakeCodex()
+            codex.state.thread_id = "thread-luna"
+            codex.thread_model = "gpt6-luna"
+            codex.thread_effort = "high"
+            codex.models = [
+                CodexModel("gpt-6.2-sol", "GPT-6.2-Sol", True, ("low",), "low"),
+                CodexModel("gpt6-luna", "GPT-6-Luna", False, ("low", "high"), "low"),
+            ]
+            controller = TelegramUserController(config, telegram, object(), 101)  # type: ignore[arg-type]
+            controller.bind_codex(codex)  # type: ignore[arg-type]
+
+            await controller._handle_message(
+                IncomingMessage(1, 1, 101, 101, "private", "/model")
+            )
+
+            text = telegram.messages[-1][1]
+            self.assertIn("GPT-6-Luna", text)
+            self.assertNotIn("GPT-6.2-Sol", text)
+            self.assertIn("Высокий (high)", text)
+            labels = [
+                button["text"]
+                for row in telegram.reply_markups[-1]["inline_keyboard"]
+                for button in row
+            ]
+            self.assertIn("› GPT-6-Luna ‹", labels)
+
+    async def test_model_picker_uses_shared_page_counter_and_callbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AppConfig(
+                telegram_bot_token="token",
+                telegram_allowed_user_ids=(101,),
+                workspace_root=Path(temp_dir),
+                codex_bin="codex",
+                codex_model=None,
+                network_access=False,
+                approval_policy="on-request",
+                shell_timeout_seconds=60,
+                database_file=Path(temp_dir) / "state.sqlite3",
+            )
+            telegram = FakeTelegram()
+            codex = FakeCodex()
+            codex.models = [
+                CodexModel(f"model-{index}", f"Model {index}", index == 0, ("low",), "low")
+                for index in range(9)
+            ]
+            controller = TelegramUserController(config, telegram, object(), 101)  # type: ignore[arg-type]
+            controller.bind_codex(codex)  # type: ignore[arg-type]
+
+            await controller._handle_message(
+                IncomingMessage(1, 1, 101, 101, "private", "/model")
+            )
+
+            picker = controller.model_picker
+            self.assertIsNotNone(picker)
+            assert picker is not None
+            self.assertNotIn("Страница 1/2", telegram.messages[-1][1])
+            first_pager = telegram.reply_markups[-1]["inline_keyboard"][-1]
+            self.assertEqual([button["text"] for button in first_pager], ["«", "1/2", "»"])
+            self.assertEqual(first_pager[2]["callback_data"], f"m:{picker.token}:p:1")
+            await controller._handle_callback(
+                IncomingCallback(
+                    2,
+                    "current-model-page",
+                    101,
+                    101,
+                    picker.message_id or 0,
+                    first_pager[1]["callback_data"],
+                )
+            )
+            self.assertEqual(picker.page, 0)
+            self.assertEqual(telegram.edits, [])
+
+            await controller._handle_callback(
+                IncomingCallback(
+                    3,
+                    "next-model-page",
+                    101,
+                    101,
+                    picker.message_id or 0,
+                    first_pager[2]["callback_data"],
+                )
+            )
+            second_pager = telegram.edit_markups[-1]["inline_keyboard"][-1]
+            self.assertEqual([button["text"] for button in second_pager], ["«", "2/2", "»"])
+            self.assertEqual(second_pager[0]["callback_data"], f"m:{picker.token}:p:0")
+
+            await controller._handle_callback(
+                IncomingCallback(
+                    4,
+                    "previous-model-page",
+                    101,
+                    101,
+                    picker.message_id or 0,
+                    second_pager[0]["callback_data"],
+                )
+            )
+            self.assertEqual(
+                [button["text"] for button in telegram.edit_markups[-1]["inline_keyboard"][-1]],
+                ["«", "1/2", "»"],
+            )
 
 class PickerPaginationTests(unittest.TestCase):
     def test_two_column_pages_hold_ten_items_and_show_total(self) -> None:

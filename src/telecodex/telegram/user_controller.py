@@ -2186,7 +2186,8 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _show_model_picker(self, chat_id: int) -> None:
         try:
-            models = await self._codex().list_models()
+            codex = self._codex()
+            models = await codex.list_models()
         except Exception as exc:
             self._log_failure(
                 "Could not list Codex models",
@@ -2199,7 +2200,24 @@ class TelegramUserController(McpTelegramMixin):
             await self.telegram.send_message(chat_id, self._text("models.label.empty"))
             return
 
-        picker = ModelPicker(token=secrets.token_urlsafe(6), models=models, page=0)
+        try:
+            current_model, current_effort = await codex.current_model_settings(models)
+        except Exception as exc:
+            self._log_failure(
+                "Could not read the current model settings for the Codex thread",
+                exc,
+                event="telegram.models.current_settings_failed",
+                level=logging.WARNING,
+            )
+            current_model = codex.selected_model or codex.default_model(models)
+            current_effort = codex.selected_effort
+        picker = ModelPicker(
+            token=secrets.token_urlsafe(6),
+            models=models,
+            page=0,
+            current_model=current_model,
+            current_effort=current_effort,
+        )
         message = await self.telegram.send_message(
             chat_id,
             self._model_picker_text(picker),
@@ -4812,6 +4830,8 @@ class TelegramUserController(McpTelegramMixin):
                     self._text("models.label.selection_failed"),
                 )
                 return
+            picker.current_model = model.model
+            picker.current_effort = effort
             picker.effort_model_index = None
             await self.telegram.answer_callback(
                 incoming.callback_id,
@@ -4823,6 +4843,10 @@ class TelegramUserController(McpTelegramMixin):
                 self._model_picker_text(picker),
                 self._model_picker_keyboard(picker),
             )
+            return
+
+        if action == "i" and len(parts) == 3:
+            await self.telegram.answer_callback(incoming.callback_id)
             return
 
         if action == "p" and len(parts) == 4:
@@ -4847,6 +4871,9 @@ class TelegramUserController(McpTelegramMixin):
         if action == "r" and len(parts) == 3:
             try:
                 await self._codex().select_model(None, None)
+                picker.current_model, picker.current_effort = await self._codex().current_model_settings(
+                    picker.models
+                )
             except Exception as exc:
                 self._log_failure(
                     "Could not reset Codex model and effort",
@@ -4908,32 +4935,39 @@ class TelegramUserController(McpTelegramMixin):
                 model=model.display_name,
                 default_effort=default_effort,
             )
-        current_model = codex.selected_model or codex.default_model(picker.models)
+        current_model = picker.current_model
         model_info = next((model for model in picker.models if model.model == current_model), None)
         current = model_info.display_name if model_info else current_model or self._text("common.values.default_codex_model")
-        if codex.selected_effort:
-            current += self._text("models.values.current_effort", effort=self._effort_label(codex.selected_effort))
+        if picker.current_effort and (
+            model_info is None
+            or picker.current_effort != model_info.default_reasoning_effort
+        ):
+            current += self._text(
+                "models.values.current_effort",
+                effort=self._effort_label(picker.current_effort),
+            )
         elif model_info and model_info.default_reasoning_effort:
             current += self._text(
                 "models.values.current_effort_default",
                 effort=self._effort_label(model_info.default_reasoning_effort),
             )
+        elif picker.current_effort:
+            current += self._text(
+                "models.values.current_effort",
+                effort=self._effort_label(picker.current_effort),
+            )
         message = self._text("models.label.prompt", current=current)
         if codex.is_busy:
             message += self._text("models.values.busy_notice")
-        page_count = self._model_page_count(picker)
-        if page_count > 1:
-            message += self._text("models.values.page", current=picker.page + 1, total=page_count)
         return message
 
     def _model_picker_keyboard(self, picker: ModelPicker) -> dict[str, Any]:
-        codex = self._codex()
-        selected_model = codex.selected_model or codex.default_model(picker.models)
+        selected_model = picker.current_model
         if picker.effort_model_index is not None:
             model = picker.models[picker.effort_model_index]
             rows: list[list[dict[str, str]]] = []
             default_effort = model.default_reasoning_effort
-            current_effort = codex.selected_effort if selected_model == model.model else None
+            current_effort = picker.current_effort if selected_model == model.model else None
             if default_effort:
                 default_label = self._text(
                     "models.buttons.default_effort",
@@ -4977,16 +5011,16 @@ class TelegramUserController(McpTelegramMixin):
         rows.append([{"text": self._text("models.buttons.reset"), "callback_data": f"m:{picker.token}:r"}])
         page_count = self._model_page_count(picker)
         if page_count > 1:
-            navigation = []
-            if picker.page > 0:
-                navigation.append(
-                    {"text": self._text("models.buttons.previous"), "callback_data": f"m:{picker.token}:p:{picker.page - 1}"}
+            rows.append(
+                navigation_row(
+                    picker.page,
+                    page_count,
+                    self.texts.system("buttons.pager.previous"),
+                    self.texts.system("buttons.pager.page", current="{current}", total="{total}"),
+                    self.texts.system("buttons.pager.next"),
+                    f"m:{picker.token}",
                 )
-            if picker.page < page_count - 1:
-                navigation.append(
-                    {"text": self._text("models.buttons.next"), "callback_data": f"m:{picker.token}:p:{picker.page + 1}"}
-                )
-            rows.append(navigation)
+            )
         return {"inline_keyboard": rows}
 
     @staticmethod

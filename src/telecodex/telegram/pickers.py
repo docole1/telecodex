@@ -23,6 +23,8 @@ class ModelPicker:
     token: str
     models: list[CodexModel]
     page: int
+    current_model: str | None = None
+    current_effort: str | None = None
     message_id: int | None = None
     effort_model_index: int | None = None
 

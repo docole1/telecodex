@@ -1008,6 +1008,43 @@ class CodexSession:
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
+    async def current_model_settings(
+        self,
+        models: list[CodexModel],
+    ) -> tuple[str | None, str | None]:
+        """Return the effective model and effort for the selected thread or user."""
+        self._sync_persisted_thread_selection()
+        await self._ensure_app_server()
+
+        thread_id = self.state.thread_id
+        if thread_id:
+            try:
+                response = await self.app_server.request(
+                    "thread/read",
+                    {"threadId": thread_id},
+                    timeout_seconds=30,
+                )
+            except Exception as exc:
+                log_exception(
+                    logger,
+                    "Could not refresh model settings for the selected Codex thread",
+                    exc,
+                    event="codex.model_picker.thread_read_failed",
+                    level=logging.WARNING,
+                    **self._thread_log_fields(thread_id),
+                )
+            else:
+                self._capture_thread_settings(response)
+            model = self._thread_model or self.state.selected_model or self.config.codex_model
+            effort = self._thread_effort or self.state.selected_effort
+        else:
+            model = self.state.selected_model or self.config.codex_model
+            effort = self.state.selected_effort
+
+        if not model:
+            model = self.default_model(models)
+        return model, effort
+
     @property
     def selected_model(self) -> str | None:
         return self.state.selected_model

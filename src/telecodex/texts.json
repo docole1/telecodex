@@ -278,13 +278,10 @@
             "high": "Высокий (high)",
             "xhigh": "Очень высокий (xhigh)",
             "max": "Максимальный (max)"
-          },
-          "previous": "‹ Назад",
-          "next": "Дальше ›"
+          }
         },
         "values": {
           "busy_notice": "\nЗадача уже выполняется; выбор применится к следующей.",
-          "page": "\nСтраница {current}/{total}",
           "codex_default_effort": "настройка модели",
           "current_effort": " · {effort}",
           "current_effort_default": " · по умолчанию ({effort})"
