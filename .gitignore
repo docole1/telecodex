@@ -1,0 +1,18 @@
+.env
+plans/
+/docs/
+userbot_tester/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+# Ignore the JSON source used only when importing state into a new database.
+state.json

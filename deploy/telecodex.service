@@ -1,0 +1,20 @@
+[Unit]
+Description=TeleCodex Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=YOUR_LINUX_USER
+Group=YOUR_LINUX_USER
+WorkingDirectory=/opt/telecodex
+EnvironmentFile=/etc/telecodex.env
+ExecStart=/opt/telecodex/.venv/bin/telecodex run
+Restart=on-failure
+RestartSec=5
+WatchdogSec=90
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
