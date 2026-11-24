@@ -1,0 +1,24 @@
+{
+  "label": {
+    "missing_translation": "Translation for “{language}.{key}” is not filled in.",
+    "language_picker_prompt": "Choose the interface language:\nВыбери язык интерфейса:",
+    "language_picker_saved": "Interface language: {language}.",
+    "language_picker_stale": "The language list is outdated. Send /language",
+    "language_picker_invalid": "Unknown language"
+  },
+  "buttons": {
+    "pager": {
+      "previous": "«",
+      "page": "{current}/{total}",
+      "next": "»"
+    }
+  },
+  "values": {
+    "selected_label": "› {selected} ‹",
+    "ellipsis": "...",
+    "language_names": {
+      "ru": "Русский",
+      "en": "English"
+    }
+  }
+}

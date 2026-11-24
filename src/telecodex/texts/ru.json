@@ -1,0 +1,750 @@
+{
+  "commands": {
+    "label": {
+      "help": "Пиши задачу обычным сообщением — Codex выполнит её в выбранной директории. Можно отправлять голосовые сообщения, аудиофайлы, документы и фотографии.\n\n<strong>Диалоги и проект</strong>\n/new — выбрать директорию и начать новый диалог\n/chats — выбрать сохранённый диалог\n/rename название — переименовать диалог\n/fork — создать копию текущего диалога\n/delete — удалить текущий диалог и его копии\n/compact — сжать контекст диалога\n/recap — получить краткую сводку без сжатия контекста\n/init — создать AGENTS.md для проекта, если его ещё нет\n/files — просматривать, открывать и скачивать файлы проекта\n\n<strong>Настройки</strong>\n/model — выбрать модель Codex кнопкой\n/fast — переключить быстрый режим, если он доступен\n/mode — выбрать ответы, тихие обновления или подробный журнал\n/plan — переключить Plan/Default; /plan задача — начать планирование задачи\n/goal цель — работать до достижения цели; /goal — статус; /goal edit — изменить цель; /goal pause/resume/clear — управление целью\n/permissions — выбрать режим разрешений для диалога\n/skills — выбрать или настроить skills Codex\n/memories — настроить использование и создание локальной памяти Codex\n/mcp — посмотреть и настроить MCP-серверы Codex; /mcp verbose — подробный список\n/language — выбрать язык интерфейса\n\n<strong>Управление задачей</strong>\n/stop — остановить задачу Codex или текущую shell-команду\n/ps — фоновые терминалы текущего диалога\n/shell — открыть интерактивный shell в среде TeleCodex; /shell команда — выполнить одну команду\n/exit — закрыть интерактивный shell и вернуться к Codex\n\n<strong>Диагностика и восстановление</strong>\n/status — состояние диалога и лимитов\n/doctor — проверить связь с Telegram и Codex\n/recover — перезапустить Codex для текущего диалога, сохранив его историю\n\n<strong>Группы</strong>\n/group_add — подключить группу\n/group_remove — отключить группу или отменить её настройку\n/group_mode — переключить группу на отправку всех обычных сообщений Codex",
+      "unknown": "Такой команды нет. Список команд: /help.",
+      "unknown_suggested": "Команды /{command} нет. Возможно, нужна одна из этих: {suggestions}. Список команд: /help.",
+      "private_only": "Используй личный чат с ботом.",
+      "open_private_chat": "Открой личный чат с ботом",
+      "stop_idle": "Сейчас активной задачи нет.",
+      "stop_failed": "Не удалось остановить задачу Codex. Проверь состояние через /doctor.",
+      "steered": "Уточнение добавлено к текущей задаче."
+    }
+  },
+  "doctor": {
+    "label": {
+      "title": "<strong>Проверка TeleCodex</strong>",
+      "failed": "Не удалось собрать диагностику.",
+      "group_owner_only": "Диагностика доступна только операторам TeleCodex в личном чате с ботом."
+    },
+    "values": {
+      "telegram_ok": "Telegram API: <strong>доступен</strong>",
+      "telegram_failed": "Telegram API: <strong>ошибка</strong> ({detail})",
+      "codex_ok": "Codex app-server: <strong>доступен</strong>",
+      "codex_stopped": "Codex app-server: <strong>не запущен</strong>",
+      "codex_failed": "Codex app-server: <strong>ошибка</strong> ({detail})",
+      "auth_ok": "ChatGPT-вход: <strong>подтверждён</strong>",
+      "auth_api_key": "Авторизация: используется <strong>API key</strong>",
+      "auth_missing": "ChatGPT-вход: <strong>не найден</strong>",
+      "auth_unverified": "ChatGPT-вход: <strong>не подтверждён</strong>",
+      "auth_unknown": "ChatGPT-вход: <strong>нет данных</strong>",
+      "chat_selected": "Диалог: <strong>выбран</strong>",
+      "chat_empty": "Диалог: <strong>не выбран</strong>",
+      "task_busy": "Задача: <strong>выполняется</strong>",
+      "task_idle": "Задача: <strong>нет активной</strong>",
+      "proxy_on": "Прокси Telegram: <strong>настроен</strong>",
+      "proxy_off": "Прокси Telegram: <strong>не настроен</strong>",
+      "audio_ready": "Голосовые: <strong>распознавание готово</strong>",
+      "audio_configured": "Голосовые: модель {model} <strong>загрузится при первом аудио</strong>",
+      "audio_missing": "Голосовые: <strong>faster-whisper не установлен</strong>",
+      "poll_healthy": "Получение обновлений Telegram: <strong>работает</strong>, последняя проверка {seconds} с назад",
+      "poll_recovering": "Получение обновлений Telegram: <strong>соединение восстанавливается</strong>, ошибок подряд — {count}"
+    }
+  },
+  "chat": {
+    "label": {
+      "no_result": "Codex завершил задачу без текстового ответа.",
+      "interrupted": "Codex остановил задачу.",
+      "failed": "Не удалось завершить задачу.",
+      "with_error": "{message}\n\n{error}",
+      "final_answer": "{message}"
+    }
+  },
+  "recovery": {
+    "label": {
+      "checking": "Давно нет обновлений от Codex. Проверка состояния задачи...",
+      "running": "Codex продолжает выполнять задачу.",
+      "chat_recovered": "<strong>Codex перезапущен</strong> для этого диалога. История и настройки сохранены, диалог свободен.",
+      "interrupted": "Задача <strong>завершилась без ответа</strong>. Последний сохранённый ответ:\n{message}",
+      "prompt_interrupted": "Codex ждал ответа или подтверждения во время перезапуска. Запрос закрыт, <strong>задача остановлена</strong>.\n\nПоследний сохранённый ответ:\n{message}",
+      "chat_recovery_failed": "Не удалось безопасно восстановить диалог. История сохранена, <strong>новые задачи заблокированы</strong>. Проверь /doctor; если восстановить диалог не удастся, начни новый через /new.",
+      "unknown": "Не удалось определить <strong>итог задачи</strong> Codex.",
+      "prompt_expired": "Этот запрос Codex больше не действует после завершения или перезапуска задачи.",
+      "result_unavailable": "Итог задачи сохранён, но текст ответа восстановить не удалось. Проверь историю диалога через /chats.",
+      "delivery_pending": "Предыдущий ответ Codex пока не удалось доставить. Текущее сообщение <strong>не отправлено</strong> в Codex; отправь его ещё раз позже.",
+      "quiet_turn": "От Codex давно нет событий, но app-server всё ещё считает задачу активной. Активных команд не обнаружено. Можно <strong>продолжить ждать</strong> или <strong>остановить задачу</strong> и открыть новый диалог. Итог остановленной задачи может остаться неизвестным.",
+      "waiting": "Ожидание ответа Codex продолжается. Текущая задача не прервана.",
+      "switched": "<strong>Новый диалог создан</strong> в директории {path}. Итог предыдущей задачи неизвестен; исходный запрос повторно не запускался.",
+      "reset_confirm": "<strong>Перезапустить Codex</strong> для текущего диалога? История, выбранная директория и настройки сохранятся. Если будут обнаружены активная задача или фоновые команды, они будут показаны, и потребуется отдельное подтверждение.",
+      "impact_title": "Перед восстановлением нужно подтвердить <strong>остановку текущей работы</strong>.",
+      "active_turn_warning": "Активная задача Codex <strong>будет прервана</strong>. Если её итог нельзя подтвердить, он будет отмечен как неизвестный; запрос повторно не запустится.",
+      "compaction_warning": "Ожидающее или зависшее сжатие контекста будет очищено после перезапуска.",
+      "status_unknown_warning": "Codex не подтвердил, что диалог свободен.",
+      "terminals_heading": "Эти фоновые команды <strong>будут остановлены</strong>:",
+      "more_terminals": "...и ещё {count}.",
+      "impact_confirm_note": "После подтверждения app-server будет перезапущен только для этого диалога, затем будет проверено, что диалог снова свободен.",
+      "confirm_pending": "Сначала подтверди или отмени восстановление текущего диалога.",
+      "in_progress": "Диалог Codex восстанавливается. Новые сообщения пока не отправляются.",
+      "blocked": "Восстановление не подтвердило безопасное состояние Codex. <strong>Новые задачи заблокированы</strong>; проверь /doctor, повтори /recover или начни новый диалог через /new.",
+      "cancelled": "Восстановление отменено. Текущий диалог и работа оставлены без изменений.",
+      "stale": "Это подтверждение восстановления устарело. Напиши /recover ещё раз.",
+      "turn_completed": "Результат завершённой задачи Codex восстановлен:\n\n{message}",
+      "turn_failed": "Codex завершил задачу с ошибкой:\n\n{message}"
+    },
+    "buttons": {
+      "wait_button": "Подождать",
+      "switch_button": "Остановить и открыть новый диалог",
+      "reset_button": "Перезапустить Codex",
+      "apply_button": "Остановить и восстановить"
+    }
+  },
+  "status": {
+    "label": {
+      "summary": "Codex: <strong>{activity}</strong>\nДиалог: <strong>{title}</strong>\nМодель: <strong>{model}</strong>\nСкорость: <strong>{service_tier}</strong>\nРежим: <strong>{collaboration_mode}</strong>\nДиректория: <strong>{project}</strong>\nРазрешения: <strong>{permissions}</strong>\nАккаунт: <strong>{account}</strong>\nКонтекст: <strong>{context}</strong>\nЛимит 5 часов: <strong>{short_limit}</strong>\nНедельный лимит: <strong>{weekly_limit}</strong>",
+      "compaction_started": "Codex сжимает контекст...",
+      "compaction_completed": "Контекст сжат. Codex продолжает задачу.",
+      "manual_compaction_completed": "Контекст диалога сжат. Можно продолжать.",
+      "compaction_failed": "Не удалось сжать контекст диалога.",
+      "mcp_oauth_success": "OAuth-вход для MCP-сервера {name} выполнен.",
+      "mcp_oauth_failed": "OAuth-вход для MCP-сервера {name} не завершился. Напиши /mcp и попробуй ещё раз."
+    },
+    "values": {
+      "ready": "готов",
+      "busy": "выполняет задачу",
+      "chatgpt": "ChatGPT",
+      "account_hidden": "скрыт в группах",
+      "account_plan": "{account} ({plan})",
+      "speed_standard": "Стандарт",
+      "collaboration_mode_plan": "Планирование",
+      "collaboration_mode_default": "Обычный",
+      "untitled": "без названия",
+      "effort_unknown": "глубина рассуждений неизвестна",
+      "permissions_unknown": "неизвестно (внешний диалог)",
+      "permissions_default": "настройка Codex ({policy})",
+      "context_usage": "{percent}% ({used} / {window} токенов)",
+      "context_unknown_window": "{used} токенов; размер окна неизвестен",
+      "rate_limit": "{remaining}% осталось; сброс {reset} МСК",
+      "rate_limit_no_reset": "{remaining}% осталось"
+    }
+  },
+  "detailed_log": {
+    "label": {
+      "command_running": "Codex выполняет команду в проекте...",
+      "command_result_header": "{state} за {duration}; код выхода: {exit_code}.",
+      "command_result_unlinked_header": "{state} {command} за {duration}; код выхода: {exit_code}.",
+      "web_search_started_generic": "Browsing the web..."
+    },
+    "values": {
+      "explored_action": {
+        "files_in": "файлы в {target}",
+        "search_in": "поиск «{query}» в {target}",
+        "search": "поиск «{query}»",
+        "search_directory": "поиск в {target}"
+      },
+      "command_started": "Ran",
+      "command_succeeded": "Выполнено",
+      "command_failed": "Завершилось с ошибкой",
+      "command_declined": "Отклонено",
+      "command_unknown": "Неизвестная команда",
+      "command_no_output": "(команда ничего не вывела)",
+      "command_exit_code_unknown": "неизвестен",
+      "command_duration_unknown": "время неизвестно",
+      "duration_seconds": "{seconds} с",
+      "duration_minutes": "{minutes} мин {seconds} с",
+      "explored": "Explored",
+      "file_added": "Added",
+      "file_edited": "Edited",
+      "file_deleted": "Deleted",
+      "file_edit_failed": "Edit failed",
+      "file_edit_declined": "Edit declined",
+      "web_search_started": "Browsing the web",
+      "web_search_completed": "Searched the web",
+      "skill_attached": "Skill attached:",
+      "review_started": "Code review started",
+      "review_completed": "Code review finished",
+      "image_generation_started": "Generating image",
+      "image_generation_completed": "Image generated",
+      "image_generation_failed": "Image generation failed",
+      "image_generation_limit": "usage limit exceeded",
+      "subagent_started": "Subagent started",
+      "subagent_completed": "Subagent completed",
+      "subagent_interrupted": "Subagent interrupted",
+      "subagent_failed": "Subagent failed",
+      "mcp_started": "MCP started",
+      "mcp_completed": "MCP completed",
+      "mcp_failed": "MCP failed",
+      "mcp_server_status": "MCP server status",
+      "mcp_duration": " · {duration}",
+      "command_truncated": "\n... команда сокращена"
+    }
+  },
+  "errors": {
+    "label": {
+      "read_status": "Не удалось прочитать состояние Codex. Проверь авторизацию и настройки.",
+      "codex_auth": "Не удалось запустить Codex. Проверь ChatGPT-вход от имени пользователя, под которым работает бот.",
+      "rpc_start": "Codex app-server отклонил запуск задачи.\nRPC {code}: {detail}",
+      "codex_start": "Не удалось запустить Codex. Проверь настройки Codex в среде TeleCodex.",
+      "shell_exec": "Не удалось выполнить команду.",
+      "update_failed": "Не удалось обработать сообщение. Проверь логи сервиса.",
+      "auth_expired": "<strong>Авторизация ChatGPT</strong> в Codex больше не действует. Выполни <code>codex login</code> от имени пользователя TeleCodex и перезапусти бота.",
+      "transport_closed": "Соединение с Codex app-server завершилось."
+    }
+  },
+  "common": {
+    "label": {
+      "stale_button": "Кнопка больше не действует",
+      "no_chat": "Нет активного диалога Codex."
+    },
+    "buttons": {
+      "cancel": "Отмена",
+      "back_to_list": "‹ К списку",
+      "back": "‹ Назад",
+      "confirm": "Подтвердить",
+      "decline": "Отклонить"
+    },
+    "values": {
+      "no_active_chat": "нет активного диалога",
+      "default_codex_model": "модель Codex по умолчанию",
+      "no_data": "нет данных",
+      "oauth_name": "OAuth"
+    }
+  },
+  "documents": {
+    "label": {
+      "too_large": "Файл «{filename}» превышает лимит загрузки Telegram Bot API — 20 МБ.",
+      "download_failed": "Не удалось скачать файл «{filename}» из Telegram.",
+      "save_failed": "Не удалось безопасно сохранить файл «{filename}» в директории проекта.",
+      "processing_failed": "Не удалось обработать вложение. Проверь журнал TeleCodex.",
+      "converter_missing": "Не найден MarkItDown для обработки файла «{filename}». Переустанови TeleCodex командой: <code>python -m pip install -e .</code>",
+      "conversion_failed": "Не удалось извлечь текст из файла «{filename}».",
+      "empty": "В файле «{filename}» не найден текст. Возможно, это скан; распознавание OCR пока не включено.",
+      "pending_user_input": "Codex ждёт ответ. Отправь его текстом или голосовым сообщением; другие вложения отправь отдельно."
+    },
+    "values": {
+      "default_prompt": "Изучи приложенные файлы и помоги с ними.",
+      "paths_heading": "Файлы, приложенные пользователем:",
+      "read_instruction": "Перед ответом изучи перечисленные файлы. Для PDF и документов Office используй извлечённый Markdown; оригиналы тоже доступны по указанным путям."
+    }
+  },
+  "audio": {
+    "label": {
+      "too_long": "Аудио длиннее установленного лимита в {seconds} секунд.",
+      "invalid_file": "Не удалось прочитать аудиофайл.",
+      "transcriber_missing": "Модуль локального распознавания не установлен. Переустанови TeleCodex: <code>python -m pip install -e .</code>",
+      "model_load_failed": "Не удалось загрузить локальную модель распознавания речи. Проверь свободную память и сеть для первой загрузки модели.",
+      "transcription_failed": "Не удалось распознать аудио. Попробуй отправить его в формате voice note или MP3.",
+      "empty": "В аудио не удалось распознать речь.",
+      "transcript": "<strong>Распознано:</strong>\n{transcript}"
+    }
+  },
+  "shell": {
+    "label": {
+      "usage": "Укажи команду после /shell",
+      "started": "<strong>Интерактивный shell открыт</strong> в {cwd}. Обычные сообщения сейчас выполняются в shell. Команда cd меняет только директорию shell; директория Codex меняется через /new или /chats. /stop — Ctrl+C; /exit — вернуться к Codex.",
+      "already_open": "Интерактивный shell уже открыт в {cwd}.",
+      "closed": "Shell закрыт. Обычные сообщения снова отправляются Codex.",
+      "closed_on_chat_switch": "Интерактивный shell закрыт; обычные сообщения теперь идут в Codex.",
+      "not_open": "Интерактивный shell не открыт. Напиши /shell.",
+      "start_failed": "Не удалось открыть интерактивный shell. Проверь журнал TeleCodex.",
+      "attachments_unsupported": "Интерактивный shell принимает только текст. Напиши /exit, чтобы отправить вложение Codex.",
+      "input_too_long": "Сообщение слишком длинное для интерактивного shell.",
+      "stop_requested": "Текущему shell-процессу отправлен Ctrl+C.",
+      "stop_idle": "В shell сейчас нет выполняющейся команды.",
+      "idle_closed": "Shell закрыт после 30 минут бездействия. Напиши /shell, чтобы открыть новую сессию.",
+      "process_closed": "Shell-процесс завершился. Напиши /shell, чтобы открыть новую сессию.",
+      "reader_closed": "Соединение с shell потеряно. Напиши /shell, чтобы открыть новую сессию.",
+      "result": "{state}\n\n{output}"
+    },
+    "values": {
+      "timeout": "превышено время ожидания",
+      "exit_code": "код завершения: {code}",
+      "no_output": "(нет вывода)",
+      "output_truncated": "\n... захвачены только первые 64 KiB"
+    }
+  },
+  "models": {
+    "label": {
+      "list_failure": "Не удалось получить список моделей Codex.",
+      "empty": "Codex не вернул доступных моделей.",
+      "prompt": "Выбери модель Codex.\nСейчас: <strong>{current}</strong>",
+      "effort_prompt": "Модель: <strong>{model}</strong>\nВыбери глубину рассуждений. По умолчанию для модели: {default_effort}.",
+      "selection_failed": "Не удалось применить модель.",
+      "selection_saved": "Модель и глубина рассуждений сохранены",
+      "expired": "Список моделей устарел. Напиши /model",
+      "invalid_page": "Такой страницы нет",
+      "unknown": "Неизвестная модель"
+    },
+    "buttons": {
+      "reset": "Сбросить настройки модели",
+      "default_effort": "По умолчанию ({effort})",
+      "back": "‹ К моделям",
+      "effort_names": {
+        "none": "Без рассуждений (none)",
+        "minimal": "Минимальный (minimal)",
+        "low": "Низкий (low)",
+        "medium": "Средний (medium)",
+        "high": "Высокий (high)",
+        "xhigh": "Очень высокий (xhigh)",
+        "max": "Максимальный (max)"
+      }
+    },
+    "values": {
+      "busy_notice": "\nЗадача уже выполняется; выбор применится к следующей.",
+      "codex_default_effort": "настройка модели",
+      "current_effort": " · {effort}",
+      "current_effort_default": " · по умолчанию ({effort})"
+    }
+  },
+  "directories": {
+    "label": {
+      "prompt": "Выбери <strong>директорию</strong> для нового диалога.\nТекущая: {path}",
+      "created": "<strong>Новый диалог создан.</strong>\nДиректория: {path}",
+      "read_failed": "Не удалось прочитать список директорий.",
+      "create_failed": "Не удалось создать диалог Codex. Проверь логи.",
+      "stale": "Список директорий устарел. Напиши /new."
+    },
+    "buttons": {
+      "up": "..",
+      "choose": "Выбрать эту директорию"
+    }
+  },
+  "chats": {
+    "label": {
+      "prompt": "Выбери диалог Codex, чтобы посмотреть его детали.\nТекущая директория: {current}",
+      "empty": "Сохранённых диалогов в доступных директориях нет.",
+      "list_failed": "Не удалось получить список диалогов Codex.",
+      "stale": "Список диалогов устарел. Напиши /chats.",
+      "resume_failed": "Не удалось продолжить выбранный диалог Codex.",
+      "loading": "Загрузка диалога...",
+      "detail": "Диалог: <strong>{name}</strong>\nДиректория: {path}\n\nПоследнее сообщение Codex:\n{message}",
+      "no_ai_message": "В этом диалоге пока нет сообщений от Codex.",
+      "preview_unavailable": "Не удалось загрузить последнее сообщение Codex.",
+      "active_writer": "Диалог «{label}» сейчас <strong>открыт в другой сессии</strong> Codex. Можно повторить подключение или открыть копию.",
+      "fork_failed": "Не удалось открыть копию диалога «{label}». Исходный диалог не изменён. Можно повторить или вернуться к списку.",
+      "forked": "<strong>Копия диалога открыта:</strong>\n{label}\nДиректория: {path}\nИсходный диалог не изменён.",
+      "selected": "<strong>Диалог выбран:</strong>\n{label}\nДиректория: {path}"
+    },
+    "buttons": {
+      "untitled": "Без названия",
+      "choose": "Выбрать",
+      "copy": "Копия",
+      "retry": "Повторить",
+      "fork": "Открыть копию"
+    }
+  },
+  "thread_switch": {
+    "label": {
+      "confirm_new": "Codex ещё выполняет задачу. <strong>Остановить её</strong> и начать новый диалог в директории {path}? Если итог текущей задачи не успел сохраниться, он будет неизвестен. Запрос повторяться не будет.",
+      "confirm_chat": "Codex ещё выполняет задачу. <strong>Остановить её</strong> и переключиться на диалог «{label}»? Если итог текущей задачи не успел сохраниться, он будет неизвестен. Запрос повторяться не будет.",
+      "cancelled": "Текущий диалог и задача оставлены без изменений.",
+      "new_completed": "Новый диалог открыт в директории {path}.",
+      "chat_completed": "Выбран диалог «{label}» в директории {path}.",
+      "failed": "Не удалось переключить диалог. Текущий диалог сохранён; проверь /doctor и попробуй ещё раз.",
+      "stale": "Этот запрос на переключение больше не действует."
+    },
+    "buttons": {
+      "confirm_button": "Остановить и переключить",
+      "cancel_button": "Оставить как есть"
+    }
+  },
+  "permissions": {
+    "label": {
+      "prompt": "Выбери режим разрешений для {scope}.\n<strong>Спрашивать</strong> — Codex работает в проекте; запросы подтверждений приходят в этот чат.\n<strong>Автопроверка</strong> — Codex сам оценивает запросы разрешений.\n<strong>Полный доступ</strong> — снимает ограничения Codex.\n<strong>Только чтение</strong> — запрещает запись файлов.\n{current}",
+      "selection_saved": "Режим разрешений сохранён. Он применится к новой задаче; уже выполняющаяся задача сохранит прежние разрешения.",
+      "save_failed": "Не удалось сохранить режим разрешений.",
+      "stale": "Список режимов устарел. Напиши /permissions.",
+      "filesystem_denied": "Codex запросил расширенные разрешения для файлов. Они не выданы; ограничения чтения и записи остаются прежними.",
+      "network_request": "Codex просит <strong>сетевой доступ</strong>.\n{reason}",
+      "network_request_with_filesystem": "Codex просит <strong>сетевой доступ</strong>.\n{filesystem_note}\n{reason}"
+    },
+    "buttons": {
+      "mode_names": {
+        "ask": "Спрашивать при необходимости",
+        "auto_review": "Автопроверка запросов",
+        "full_access": "Полный доступ",
+        "read_only": "Только чтение"
+      }
+    },
+    "values": {
+      "current_thread": "текущего диалога",
+      "next_thread": "нового диалога",
+      "current": "Сейчас: <strong>{mode}</strong>.",
+      "current_unknown": "Для этого диалога режим неизвестен; выбранное значение применится со следующей задачи.",
+      "current_default": "Сейчас используется политика Codex: {policy}.",
+      "next_turn": "\nТекущая задача продолжит работу с прежними разрешениями. Пока она выполняется, все сообщения идут в неё; выбранный режим применится только к следующей задаче.",
+      "filesystem_note": "Расширенные разрешения для файлов не выданы; файловые ограничения остаются прежними.",
+      "default_reason": "Доступ нужен для текущей задачи."
+    }
+  },
+  "rename": {
+    "label": {
+      "usage": "Укажи название: /rename новое название",
+      "too_long": "Название не должно быть длиннее 100 символов.",
+      "no_chat": "Нет активного диалога для переименования.",
+      "failed": "Не удалось переименовать диалог.",
+      "saved": "Диалог переименован: <strong>{name}</strong>"
+    }
+  },
+  "thread_commands": {
+    "label": {
+      "busy": "Дождись завершения текущей задачи и повтори команду.",
+      "delete_confirmation": "Удалить текущий диалог <strong>навсегда</strong>? Codex также удалит все созданные от него дочерние диалоги. Их потеряют все пользователи бота, выбравшие эти диалоги. Это действие <strong>нельзя отменить</strong>.",
+      "delete_cancelled": "Удаление отменено.",
+      "delete_stale": "Текущий диалог изменился. Напиши /delete и подтверди удаление заново.",
+      "delete_failed": "Не удалось удалить диалог Codex.",
+      "deleted": "Диалог Codex и все созданные от него дочерние диалоги <strong>удалены</strong>. Следующее сообщение начнёт новый диалог в той же директории.",
+      "fork_failed": "Не удалось создать копию диалога Codex.",
+      "fork_waiting": "Копия диалога будет создана после завершения текущей задачи и фоновых команд. Текущая работа продолжается.",
+      "fork_already_waiting": "Создание копии уже ожидает завершения текущей задачи.",
+      "forked": "<strong>Копия диалога создана.</strong> Работа продолжается в ней; исходный диалог сохранён.",
+      "forked_shell_closed": "<strong>Копия диалога создана.</strong> Работа продолжается в ней; исходный диалог сохранён. Интерактивный shell закрыт; обычные сообщения теперь идут в Codex.",
+      "compact_failed": "Не удалось запустить сжатие контекста.",
+      "compact_queued": "Сжатие поставлено в очередь. Оно начнётся после завершения текущей задачи и фоновых команд.",
+      "input_queued_after_compact": "Сообщение поставлено в очередь после сжатия (позиция {position}).",
+      "compact_queue_full": "Очередь после сжатия заполнена; сообщение не принято.",
+      "compact_queue_wait_failed": "Очередь после сжатия ожидает восстановления Codex. Проверь /status; новые сообщения сохраняются в очереди.",
+      "compact_queue_discarded": "Очередь после сжатия очищена: удалено сообщений — {count}.",
+      "compact_cancelled": "Ожидающее сжатие контекста отменено."
+    },
+    "buttons": {
+      "delete_confirm_button": "Удалить навсегда"
+    }
+  },
+  "plan": {
+    "label": {
+      "enabled": "Включён режим планирования Codex.",
+      "disabled": "Включён обычный режим Codex.",
+      "unavailable": "Эта версия Codex app-server не поддерживает встроенный режим планирования.",
+      "failed": "Не удалось изменить режим Codex. Проверь логи и повтори команду."
+    }
+  },
+  "goal": {
+    "label": {
+      "none": "В этом диалоге нет цели.",
+      "unavailable": "Эта версия Codex app-server не поддерживает цели.",
+      "failed": "Не удалось прочитать или изменить цель. Проверь логи и повтори команду.",
+      "started": "<strong>Цель установлена.</strong> Codex продолжит работу до её достижения или остановки.",
+      "updated": "Цель обновлена.",
+      "edit_prompt": "Ответь на это сообщение новым текстом цели. Он заменит текущую цель; /cancel отменит изменение.",
+      "edit_cancelled": "Изменение цели отменено.",
+      "edit_text_only": "Отправь новый текст цели обычным сообщением без вложений.",
+      "edit_stale": "Диалог изменился, поэтому цель не обновлена. Напиши /goal edit в текущем диалоге.",
+      "paused": "Цель поставлена на паузу.",
+      "resumed": "Цель возобновлена. Codex продолжит работу.",
+      "cleared": "Цель очищена.",
+      "current": "Цель: <strong>{objective}</strong>\nСтатус: <strong>{status}</strong>\nИспользовано: {tokens} токенов · {seconds} сек.\nБюджет токенов: {budget}"
+    },
+    "values": {
+      "no_budget": "не задан",
+      "status": {
+        "active": "выполняется",
+        "paused": "на паузе",
+        "blocked": "заблокирована",
+        "usageLimited": "достигнут лимит аккаунта",
+        "budgetLimited": "исчерпан бюджет цели",
+        "complete": "завершена",
+        "unknown": "неизвестен"
+      }
+    }
+  },
+  "fast": {
+    "label": {
+      "usage": "Команда не принимает аргументы. Напиши /fast, чтобы переключить быстрый режим.",
+      "enabled": "<strong>Быстрый режим включён</strong> для текущей модели. Он расходует лимит быстрее.",
+      "disabled": "Для текущего диалога возвращена стандартная скорость.",
+      "unavailable": "Для текущей модели быстрый режим недоступен.",
+      "failed": "Не удалось изменить скорость модели. Проверь логи и повтори команду."
+    }
+  },
+  "skills": {
+    "label": {
+      "menu": "<strong>Skills Codex</strong>\n{selected}\nВыбери действие.",
+      "list_title": "{mode} · страница {current}/{total}",
+      "manage_notice": "Настройка сохранится в Codex и будет общей для всех диалогов, где этот skill доступен.",
+      "selected_toast": "Skill выбран",
+      "selected_next": "<strong>Skill «{name}»</strong> будет применён к следующей задаче. Пришли задачу отдельным сообщением.",
+      "disabled": "Этот skill отключён. Сначала включи его через /skills.",
+      "empty": "Для текущего проекта skills не найдены.",
+      "list_failed": "Не удалось получить список skills Codex.",
+      "stale": "Меню skills устарело. Напиши /skills заново.",
+      "select_failed": "Не удалось выбрать skill.",
+      "selected_stale": "Выбранный skill больше недоступен. Напиши /skills и выбери его снова.",
+      "updated": "Настройка skill изменена",
+      "update_failed": "Не удалось изменить настройку skill."
+    },
+    "buttons": {
+      "use_button": "Применить skill к следующей задаче",
+      "manage_button": "Включить / отключить skills",
+      "page": "{current}/{total}",
+      "enabled_prefix": "Вкл · {name}",
+      "disabled_prefix": "Выкл · {name}"
+    },
+    "values": {
+      "selected": "Следующая задача: <strong>{name}</strong>",
+      "none_selected": "Для следующей задачи skill не выбран.",
+      "actions": {
+        "use": "Выбери skill для следующей задачи",
+        "manage": "Включить или отключить skill"
+      }
+    }
+  },
+  "memories": {
+    "label": {
+      "prompt": "<strong>Локальная память Codex</strong>\n{scope}: <strong>{use_state}</strong>\nСоздание памяти в Codex Home пользователя TeleCodex: <strong>{generate_state}</strong>\nЭта настройка общая для Codex CLI и TeleCodex у этого пользователя.",
+      "generate_confirmation": "Это изменит <strong>общую настройку</strong> создания памяти в Codex Home, используемом TeleCodex и Codex CLI. Продолжить?",
+      "reset_confirmation": "<strong>Очистить</strong> все файлы локальной памяти Codex Home, используемого TeleCodex и Codex CLI? Это удалит память для всех диалогов, <strong>отменить действие нельзя</strong>.",
+      "reset_done": "Локальная память Codex очищена.",
+      "reset_failed": "Не удалось очистить локальную память Codex.",
+      "feature_disabled": "Функция памяти сейчас отключена в Codex. Её можно включить для новых диалогов в Codex Home, используемом TeleCodex.",
+      "feature_enabled": "Память Codex включена для новых диалогов в общем Codex Home.",
+      "saved": "Настройка памяти сохранена",
+      "read_failed": "Не удалось прочитать настройки памяти Codex.",
+      "save_failed": "Не удалось изменить настройку памяти Codex.",
+      "stale": "Меню памяти устарело. Напиши /memories заново."
+    },
+    "buttons": {
+      "enable_use_button": "Использовать в этом диалоге",
+      "disable_use_button": "Не использовать в этом диалоге",
+      "generate_button": "Создавать память: {state}",
+      "confirm_button": "Изменить общую настройку",
+      "reset_button": "Сбросить всю память Codex",
+      "reset_confirm_button": "Очистить память Codex Home",
+      "enable_button": "Включить для новых диалогов"
+    },
+    "values": {
+      "current_scope": "В этом диалоге, последнее значение TeleCodex",
+      "new_scope": "Для новых диалогов этой Telegram-переписки",
+      "enabled": "включено",
+      "disabled": "выключено",
+      "unknown": "неизвестно; укажи явно"
+    }
+  },
+  "mcp": {
+    "label": {
+      "usage": "Используй /mcp, /mcp verbose, /mcp add или /mcp login имя.",
+      "list_failed": "Не удалось получить список MCP-серверов Codex.",
+      "list_title": "<strong>MCP-серверы Codex</strong> · страница {current}/{total}\nНастройки общие для TeleCodex и Codex CLI этого Linux-пользователя.",
+      "empty": "Серверов пока нет. Нажми «Добавить сервер».",
+      "plugin_managed_short": "Этим сервером управляет плагин Codex.",
+      "tools_title": "<strong>Инструменты</strong> · {name} · страница {current}/{total}",
+      "tools_empty": "Сервер не объявил инструменты.",
+      "tools_unavailable": "Не удалось загрузить список инструментов.",
+      "choose_transport": "<strong>Добавление MCP-сервера</strong>\nКонфигурация будет общей для Codex CLI и TeleCodex у этого Linux-пользователя. Выбери тип подключения.",
+      "ask_name": "Пришли короткое имя сервера: латинские буквы, цифры, дефис или подчёркивание.",
+      "ask_command": "Пришли путь к исполняемому файлу или имя команды. Команда будет запущена от системного пользователя TeleCodex после подтверждения.",
+      "ask_args": "Пришли аргументы как JSON-массив строк, например [\"-y\", \"package\"]. Без аргументов пришли []. <strong>Не указывай</strong> в аргументах токены, пароли или HTTP-заголовки — используй разрешённые переменные окружения.",
+      "ask_cwd": "Пришли абсолютную существующую рабочую директорию или «-», чтобы оставить её неуказанной.",
+      "ask_env_vars": "Пришли имена переменных через запятую из списка TELECODEX_MCP_ENV_VARS. Значения задаются только в окружении процесса TeleCodex. Если переменные не нужны, пришли «-».",
+      "ask_url": "Пришли URL сервера http:// или https:// без логина, пароля, query-параметров и fragment.",
+      "choose_http_auth": "Выбери способ авторизации HTTP-сервера.",
+      "ask_bearer_env": "Пришли имя разрешённой переменной с bearer token. Само значение <strong>не отправляй</strong> боту.",
+      "confirm_add": "Добавить MCP-сервер {name}?\nКонфигурацию смогут использовать все диалоги TeleCodex и Codex CLI этого пользователя. Локальный STDIO-процесс будет запущен от системного пользователя TeleCodex и сам по себе не ограничен sandbox Codex. Подключай только <strong>доверенные серверы</strong>.\n{detail}",
+      "summary_stdio": "Транспорт: STDIO\nКоманда и аргументы: {command}\nРабочая директория: {cwd}\nРазрешённые переменные окружения: {env_vars}",
+      "summary_http": "Транспорт: Streamable HTTP\nURL: {url}\nАвторизация: {auth}\nИмя bearer-переменной: {env_var}",
+      "input_invalid": "Формат не подошёл. Попробуй ещё раз или напиши /cancel.",
+      "wizard_error": "Не удалось продолжить настройку. Напиши /mcp заново.",
+      "saving": "Сохранение настройки MCP...",
+      "added": "Сервер <strong>{name}</strong> добавлен. Активные сессии Codex обновляются.",
+      "reload_partial": "Конфигурация сохранена, но <strong>не обновилась</strong> в {count} активных сессиях Codex. Новые сессии прочитают её при запуске; проверь логи перед использованием MCP.",
+      "add_rejected": "Настройка отклонена: проверь имя, адрес и список разрешённых переменных окружения.",
+      "operation_failed": "Не удалось выполнить операцию с MCP-сервером. Проверь логи TeleCodex.",
+      "remove_confirmation": "Удалить MCP-сервер <strong>{name}</strong> из общего Codex Home? Это отключит его во всех диалогах TeleCodex и в Codex CLI этого пользователя.",
+      "confirm_enable": "Включить MCP-сервер <strong>{name}</strong> в общем Codex Home? Он будет доступен во всех диалогах TeleCodex и в Codex CLI этого пользователя.",
+      "confirm_disable": "Отключить MCP-сервер <strong>{name}</strong> во всех диалогах TeleCodex и в Codex CLI этого пользователя?",
+      "confirm_logout": "Удалить сохранённую OAuth-авторизацию MCP-сервера <strong>{name}</strong> для всех сессий Codex в TeleCodex и Codex CLI этого пользователя?",
+      "removing": "Удаление MCP-сервера...",
+      "removed": "Сервер {name} удалён из общего Codex Home.",
+      "logged_out": "OAuth-вход для {name} сброшен.",
+      "stale": "Это меню MCP устарело. Напиши /mcp заново.",
+      "owner_only": "Завершить эту настройку может только оператор, который её начал.",
+      "oauth_starting": "Запуск OAuth-входа...",
+      "oauth_start_failed": "Не удалось начать OAuth-вход для MCP-сервера.",
+      "oauth_local_callback": "OAuth callback MCP-сервера возвращается на localhost Linux-среды, где запущен TeleCodex. С телефона эта ссылка не завершит вход. В терминале этой среды выполни:\n{command}\nОткрой ссылку, которую покажет терминал. После авторизации скопируй полный redirect URL обратно в этот терминал. <strong>Не отправляй</strong> redirect URL или код в Telegram.",
+      "oauth_open_url": "Открой страницу авторизации для {name}. После завершения Codex подтвердит результат в чате.",
+      "elicitation_unsupported": "MCP-сервер {name} запросил неподдерживаемый тип подтверждения; запрос отклонён.",
+      "elicitation_url": "MCP-сервер {name} просит <strong>подтвердить действие</strong>.\n{message}\nОткрой ссылку и затем нажми «Продолжить».",
+      "elicitation_open_url": "Открыть ссылку",
+      "elicitation_use_buttons": "Для запроса MCP используй кнопки в сообщении. Команды /stop и /status продолжают работать.",
+      "elicitation_accept": "Продолжить",
+      "elicitation_cancel": "Отменить",
+      "elicitation_form": "MCP-сервер {name} просит <strong>заполнить форму</strong>.\n{message}\n{fields}\n\nОтветь одним JSON-объектом, например {{\"field\": \"value\"}}. Данные передадутся MCP-серверу.",
+      "elicitation_form_confirmation": "MCP-сервер {name} просит <strong>подтвердить действие</strong>.\n{message}\nПодтверди запрос кнопкой ниже; разрешение будет передано MCP-серверу.",
+      "elicitation_json_required": "Для этой формы нужен текстовый JSON-объект.",
+      "elicitation_json_invalid": "JSON не подошёл: проверь обязательные поля, типы значений и отправь объект ещё раз.",
+      "elicitation_submitted": "Ответ на запрос MCP отправлен.",
+      "elicitation_declined": "Запрос MCP отклонён.",
+      "elicitation_closed": "Запрос MCP уже закрыт.",
+      "elicitation_expired": "Время ожидания ответа MCP истекло."
+    },
+    "buttons": {
+      "add_button": "Добавить сервер",
+      "refresh_button": "Обновить",
+      "tools_button": "Инструменты",
+      "login_button": "Войти через OAuth",
+      "logout_button": "Выйти из OAuth",
+      "enable_button": "Включить",
+      "disable_button": "Отключить",
+      "remove_button": "Удалить",
+      "confirm_remove_button": "Удалить сервер",
+      "stdio_button": "Локальный процесс (STDIO)",
+      "http_button": "Streamable HTTP",
+      "auth_none_button": "Без авторизации",
+      "auth_oauth_button": "OAuth",
+      "auth_bearer_button": "Bearer token из env",
+      "confirm_add_button": "Добавить сервер",
+      "oauth_open_button": "Открыть авторизацию"
+    },
+    "values": {
+      "verbose_entry": "{name} · состояние {runtime} · вход {auth} · инструментов {tools} · {origin}",
+      "verbose_tools": "Инструменты: {tools}",
+      "detail_title": "MCP-сервер: <strong>{name}</strong>",
+      "detail_runtime": "Состояние: <strong>{status}</strong>",
+      "detail_auth": "Авторизация: <strong>{status}</strong>",
+      "detail_transport": "Подключение: {transport}",
+      "detail_tools": "Найдено инструментов: {count}",
+      "detail_origin": "Адрес: {origin}",
+      "detail_server_info": "Сервер: {info}",
+      "plugin_managed": "Настройка управляется плагином Codex: {plugin}.",
+      "runtime": {
+        "notStarted": "ещё не запускался",
+        "starting": "подключается",
+        "connected": "подключён",
+        "authenticationRequired": "нужна авторизация",
+        "failed": "ошибка запуска",
+        "cancelled": "запуск отменён",
+        "disabled": "отключён"
+      },
+      "auth": {
+        "unknown": "неизвестно",
+        "unsupported": "не поддерживается",
+        "notLoggedIn": "не выполнен вход",
+        "bearerToken": "bearer token"
+      },
+      "transport": {
+        "http": "Streamable HTTP",
+        "stdio": "локальный STDIO-процесс"
+      },
+      "tool_read_only": " (только чтение)",
+      "auth_mode": {
+        "none": "без авторизации",
+        "bearer": "bearer token из env"
+      },
+      "default_cwd": "не задана",
+      "none": "нет"
+    }
+  },
+  "init": {
+    "label": {
+      "path_unavailable": "Не удалось определить текущую директорию проекта внутри разрешённой рабочей области.",
+      "already_exists": "Файл {path} уже существует и <strong>не будет перезаписан</strong>. Чтобы изменить его, попроси Codex обычным сообщением."
+    }
+  },
+  "ps": {
+    "label": {
+      "no_chat": "Сначала выбери диалог Codex с проектной директорией.",
+      "empty": "В текущем диалоге нет запущенных фоновых терминалов.",
+      "list_failed": "Не удалось получить список фоновых терминалов Codex.",
+      "list_title": "<strong>Фоновые терминалы</strong> текущего диалога · {current}/{total}",
+      "detail": "Команда: {command}\nДиректория: {cwd}\n{resources}",
+      "stopped": "Фоновый терминал остановлен.",
+      "stale": "Этот список устарел. Напиши /ps заново.",
+      "action_failed": "Не удалось остановить фоновый терминал."
+    },
+    "buttons": {
+      "stop_button": "Остановить"
+    },
+    "values": {
+      "list_item": "Команда: {command}\nДиректория: {cwd}\n{resources}",
+      "resources": "PID {pid} · CPU {cpu} · память {memory}",
+      "cwd_unknown": "директория неизвестна"
+    }
+  },
+  "approval": {
+    "label": {
+      "closed": "Запрос уже закрыт",
+      "unknown_decision": "Неизвестное решение",
+      "sent": "Решение отправлено",
+      "allow_once": "Разрешить один раз",
+      "allow_task": "Разрешить на задачу",
+      "allow_session": "Разрешить на сессию",
+      "request": "Codex просит разрешить <strong>{kind}</strong>.\n{detail}"
+    },
+    "values": {
+      "network_kind": "сетевой доступ",
+      "network_detail": "Сеть: {protocol} › {host}",
+      "filesystem_kind": "изменение файлов",
+      "command_kind": "команду",
+      "command_detail": "Команда: {command}",
+      "default_reason": "Codex запросил подтверждение"
+    }
+  },
+  "user_input": {
+    "label": {
+      "title": "<strong>Codex ждёт ответ:</strong>",
+      "instructions": "Ответь одним сообщением. Команды /stop и /status продолжают работать.",
+      "timeout": "Время ожидания ответа истекло.",
+      "delivered": "Ответ передан Codex."
+    },
+    "values": {
+      "question_fallback": "Уточни задачу",
+      "numbered_question": "{index}. {question}",
+      "options": "   Варианты: {options}"
+    }
+  },
+  "mode": {
+    "label": {
+      "prompt": "<strong>Режим вывода Codex</strong> (сейчас: {current}):\nВсе варианты показывают реплики Codex и итоговый ответ. В режиме «Ответы с тихими обновлениями» промежуточные сообщения приходят без звука; финал, ошибки и вопросы к тебе — с обычным уведомлением. Подробный журнал также показывает команды, изменения файлов и другие события инструментов.",
+      "stale": "Список режимов устарел. Напиши /mode",
+      "save_failed": "Не удалось сохранить режим вывода. Попробуй ещё раз."
+    },
+    "buttons": {
+      "names": {
+        "answers": "Только ответы",
+        "quiet_answers": "Ответы с тихими обновлениями",
+        "detailed": "Подробный журнал"
+      }
+    }
+  },
+  "groups": {
+    "label": {
+      "only_group": "Эту команду нужно вызвать внутри Telegram-группы.",
+      "setup_prompt": "Пришли <strong>слова-триггеры</strong> через запятую, например: кодекс, телекодекс. Бот передаёт Codex обычные сообщения, только если они начинаются с одного из этих слов. Завершить настройку может только оператор, вызвавший /group_add. Чтобы отменить настройку, напиши /group_remove.",
+      "setup_pending_other": "Настройку триггеров уже начал другой оператор TeleCodex.",
+      "setup_invalid": "Не удалось разобрать список. Пришли отдельные слова через запятую, например: кодекс, телекодекс. Можно указать до 20 слов.",
+      "setup_cancelled": "Настройка группы отменена. Группа осталась отключённой.",
+      "attached": "<strong>Группа подключена</strong> как общий диалог Codex. Триггеры: {words}.",
+      "triggers_updated": "Список триггеров группы обновлён: {words}.",
+      "trigger_empty": "После слова-триггера добавь задачу, например: «кодекс, посмотри этот проект».",
+      "not_attached": "Эта группа не подключена к TeleCodex.",
+      "detached": "Группа отключена. Диалог Codex и его настройки сохранены; подключить группу снова можно командой /group_add.",
+      "operator_only": "Управлять группой могут только пользователи из TELEGRAM_ALLOWED_USER_IDS.",
+      "mode_prompt": "Режим сообщений в этой группе (сейчас: {current}).\n\nВ режиме «Все сообщения» обычные сообщения и медиа от пользователей с доступом к боту сразу передаются в общий диалог Codex. Команды бота продолжают работать. Включай режим <strong>только для рабочей группы</strong>, иначе обычная переписка тоже попадёт в Codex.",
+      "mode_saved": "Режим этой группы: {mode}.",
+      "mode_stale": "Это меню режима группы больше не действует. Напиши /group_mode.",
+      "mode_save_failed": "Не удалось сохранить режим группы.",
+      "activity_skipped": "Из-за ограничения Telegram пропущено обновлений журнала: {count}."
+    },
+    "buttons": {
+      "mode_names": {
+        "reply_or_trigger": "Ответ боту или триггер",
+        "all_messages": "Все сообщения › Codex"
+      }
+    }
+  },
+  "files": {
+    "label": {
+      "browser": "<strong>Файлы проекта</strong>\n{path}",
+      "detail": "<strong>Файл проекта</strong>\n{path}\nРазмер: {size}",
+      "stale": "Это меню файлов больше не действует. Напиши /files.",
+      "read_failed": "Не удалось прочитать файлы проекта.",
+      "download_failed": "Не удалось скачать файл проекта.",
+      "too_large": "Файл больше 50 MB и не может быть отправлен через Telegram.",
+      "preview_unavailable": "Предпросмотр доступен только для небольших UTF-8 текстовых файлов.",
+      "preview_header": "<strong>Предпросмотр файла</strong>\n{path}"
+    },
+    "buttons": {
+      "up": "↑ Вверх",
+      "download": "Скачать",
+      "preview": "Предпросмотр",
+      "back": "‹ К файлам"
+    },
+    "values": {
+      "preview_truncated": "\n\n... показана только первая часть файла."
+    }
+  },
+  "format": {
+    "values": {
+      "truncated": "\n... вывод сокращён"
+    }
+  }
+}

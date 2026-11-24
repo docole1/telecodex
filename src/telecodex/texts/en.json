@@ -1,0 +1,750 @@
+{
+  "commands": {
+    "label": {
+      "help": "Send your task as a regular message — Codex will run it in the selected directory. You can send voice messages, audio files, documents, and photos.\n\n<strong>Chats and projects</strong>\n/new — choose a directory and start a new chat\n/chats — choose a saved chat\n/rename name — rename the chat\n/fork — create a copy of the current chat\n/delete — delete the current chat and its copies\n/compact — compact the chat context\n/recap — get a brief summary without compacting the context\n/init — create AGENTS.md for the project if it does not exist\n/files — browse, open, and download project files\n\n<strong>Settings</strong>\n/model — choose a Codex model using a button\n/fast — toggle fast mode, if available\n/mode — choose answers, quiet updates, or a detailed log\n/plan — switch between Plan and Default; /plan task — start planning a task\n/goal objective — work until the goal is achieved; /goal — show status; /goal edit — edit the goal; /goal pause/resume/clear — manage the goal\n/permissions — choose the permission mode for the chat\n/skills — choose or configure Codex skills\n/memories — configure the use and creation of Codex local memory\n/mcp — view and configure Codex MCP servers; /mcp verbose — detailed list\n/language — choose the interface language\n\n<strong>Task control</strong>\n/stop — stop a Codex task or the current shell command\n/ps — background terminals for the current chat\n/shell — open an interactive shell in the TeleCodex environment; /shell command — run a single command\n/exit — close the interactive shell and return to Codex\n\n<strong>Diagnostics and recovery</strong>\n/status — chat and limit status\n/doctor — check the connection to Telegram and Codex\n/recover — restart Codex for the current chat while preserving its history\n\n<strong>Groups</strong>\n/group_add — connect a group\n/group_remove — disconnect a group or cancel its setup\n/group_mode — switch the group to sending all regular messages to Codex",
+      "unknown": "Unknown command. Command list: /help.",
+      "unknown_suggested": "/{command} is not a command. Maybe you meant one of these: {suggestions}. Command list: /help.",
+      "private_only": "Use a private chat with the bot.",
+      "open_private_chat": "Open a private chat with the bot",
+      "stop_idle": "There is no active task right now.",
+      "stop_failed": "Could not stop the Codex task. Check its status with /doctor.",
+      "steered": "Your clarification was added to the current task."
+    }
+  },
+  "doctor": {
+    "label": {
+      "title": "<strong>TeleCodex diagnostics</strong>",
+      "failed": "Could not collect diagnostics.",
+      "group_owner_only": "Diagnostics are available only to TeleCodex operators in a private chat with the bot."
+    },
+    "values": {
+      "telegram_ok": "Telegram API: <strong>available</strong>",
+      "telegram_failed": "Telegram API: <strong>error</strong> ({detail})",
+      "codex_ok": "Codex app-server: <strong>available</strong>",
+      "codex_stopped": "Codex app-server: <strong>not running</strong>",
+      "codex_failed": "Codex app-server: <strong>error</strong> ({detail})",
+      "auth_ok": "ChatGPT sign-in: <strong>verified</strong>",
+      "auth_api_key": "Authentication: using <strong>API key</strong>",
+      "auth_missing": "ChatGPT sign-in: <strong>not found</strong>",
+      "auth_unverified": "ChatGPT sign-in: <strong>unverified</strong>",
+      "auth_unknown": "ChatGPT sign-in: <strong>no data</strong>",
+      "chat_selected": "Chat: <strong>selected</strong>",
+      "chat_empty": "Chat: <strong>none selected</strong>",
+      "task_busy": "Task: <strong>running</strong>",
+      "task_idle": "Task: <strong>none active</strong>",
+      "proxy_on": "Telegram proxy: <strong>configured</strong>",
+      "proxy_off": "Telegram proxy: <strong>not configured</strong>",
+      "audio_ready": "Voice messages: <strong>transcription ready</strong>",
+      "audio_configured": "Voice messages: model {model} <strong>will load with the first audio</strong>",
+      "audio_missing": "Voice messages: <strong>faster-whisper is not installed</strong>",
+      "poll_healthy": "Receiving Telegram updates: <strong>working</strong>, last check {seconds}s ago",
+      "poll_recovering": "Receiving Telegram updates: <strong>connection recovering</strong>, consecutive errors — {count}"
+    }
+  },
+  "chat": {
+    "label": {
+      "no_result": "Codex completed the task without a text response.",
+      "interrupted": "Codex stopped the task.",
+      "failed": "Could not complete the task.",
+      "with_error": "{message}\n\n{error}",
+      "final_answer": "{message}"
+    }
+  },
+  "recovery": {
+    "label": {
+      "checking": "No updates from Codex for a while. Checking task status...",
+      "running": "Codex is still working on the task.",
+      "chat_recovered": "<strong>Codex restarted</strong> for this chat. History and settings were preserved; the chat is idle again.",
+      "interrupted": "The task <strong>ended without a response</strong>. Last saved response:\n{message}",
+      "prompt_interrupted": "Codex was waiting for a reply or confirmation when it restarted. The request was closed and the <strong>task was stopped</strong>.\n\nLast saved response:\n{message}",
+      "chat_recovery_failed": "Could not safely recover the chat. History was preserved; <strong>new tasks are blocked</strong>. Check /doctor; if recovery fails, start a new chat with /new.",
+      "unknown": "Could not determine the <strong>task outcome</strong> for Codex.",
+      "prompt_expired": "This Codex request is no longer active because the task ended or restarted.",
+      "result_unavailable": "The task result was saved, but its response text could not be recovered. Check the chat history with /chats.",
+      "delivery_pending": "The previous Codex response could not be delivered yet. Your current message was <strong>not sent</strong> to Codex; try sending it again later.",
+      "quiet_turn": "There have been no Codex events for a while, but app-server still considers the task active. No active commands were found. You can <strong>keep waiting</strong> or <strong>stop the task</strong> and open a new chat. The outcome of a stopped task may remain unknown.",
+      "waiting": "Still waiting for a Codex response. The current task has not been interrupted.",
+      "switched": "<strong>New chat created</strong> in {path}. The previous task outcome is unknown; the original request was not run again.",
+      "reset_confirm": "<strong>Restart Codex</strong> for the current chat? History, selected directory, and settings will be preserved. If an active task or background commands are found, they will be shown and require separate confirmation.",
+      "impact_title": "Confirm <strong>stopping the current work</strong> before recovery.",
+      "active_turn_warning": "The active Codex task <strong>will be interrupted</strong>. If its outcome cannot be confirmed, it will be marked unknown; the request will not be run again.",
+      "compaction_warning": "Pending or stuck context compaction will be cleared after restart.",
+      "status_unknown_warning": "Codex has not confirmed that the chat is available.",
+      "terminals_heading": "These background commands <strong>will be stopped</strong>:",
+      "more_terminals": "...and {count} more.",
+      "impact_confirm_note": "After confirmation, app-server will restart only for this chat, then verify that the chat is idle again.",
+      "confirm_pending": "First confirm or cancel recovery of the current chat.",
+      "in_progress": "Recovering the Codex chat. New messages are not being sent yet.",
+      "blocked": "Recovery did not confirm that Codex is in a safe state. <strong>New tasks are blocked</strong>; check /doctor, try /recover again, or start a new chat with /new.",
+      "cancelled": "Recovery was cancelled. The current chat and work were left unchanged.",
+      "stale": "This recovery confirmation has expired. Send /recover again.",
+      "turn_completed": "Result of the completed Codex task recovered:\n\n{message}",
+      "turn_failed": "Codex completed the task with an error:\n\n{message}"
+    },
+    "buttons": {
+      "wait_button": "Wait",
+      "switch_button": "Stop and open a new chat",
+      "reset_button": "Restart Codex",
+      "apply_button": "Stop and recover"
+    }
+  },
+  "status": {
+    "label": {
+      "summary": "Codex: <strong>{activity}</strong>\nChat: <strong>{title}</strong>\nModel: <strong>{model}</strong>\nSpeed: <strong>{service_tier}</strong>\nMode: <strong>{collaboration_mode}</strong>\nDirectory: <strong>{project}</strong>\nPermissions: <strong>{permissions}</strong>\nAccount: <strong>{account}</strong>\nContext: <strong>{context}</strong>\n5-hour limit: <strong>{short_limit}</strong>\nWeekly limit: <strong>{weekly_limit}</strong>",
+      "compaction_started": "Codex is compacting the context...",
+      "compaction_completed": "Context compacted. Codex is continuing the task.",
+      "manual_compaction_completed": "Chat context compacted. You can continue.",
+      "compaction_failed": "Could not compact the chat context.",
+      "mcp_oauth_success": "OAuth sign-in for MCP server {name} completed.",
+      "mcp_oauth_failed": "OAuth sign-in for MCP server {name} did not complete. Send /mcp and try again."
+    },
+    "values": {
+      "ready": "ready",
+      "busy": "working on a task",
+      "chatgpt": "ChatGPT",
+      "account_hidden": "hidden in groups",
+      "account_plan": "{account} ({plan})",
+      "speed_standard": "Standard",
+      "collaboration_mode_plan": "Planning",
+      "collaboration_mode_default": "Default",
+      "untitled": "untitled",
+      "effort_unknown": "reasoning effort unknown",
+      "permissions_unknown": "unknown (external chat)",
+      "permissions_default": "Codex policy ({policy})",
+      "context_usage": "{percent}% ({used} / {window} tokens)",
+      "context_unknown_window": "{used} tokens; window size unknown",
+      "rate_limit": "{remaining}% remaining; resets at {reset} MSK",
+      "rate_limit_no_reset": "{remaining}% remaining"
+    }
+  },
+  "detailed_log": {
+    "label": {
+      "command_running": "Codex is running a command in the project...",
+      "command_result_header": "{state} in {duration}; exit code: {exit_code}.",
+      "command_result_unlinked_header": "{state} {command} in {duration}; exit code: {exit_code}.",
+      "web_search_started_generic": "Browsing the web..."
+    },
+    "values": {
+      "explored_action": {
+        "files_in": "files in {target}",
+        "search_in": "search for “{query}” in {target}",
+        "search": "search for “{query}”",
+        "search_directory": "search in {target}"
+      },
+      "command_started": "Ran",
+      "command_succeeded": "Succeeded",
+      "command_failed": "Failed",
+      "command_declined": "Declined",
+      "command_unknown": "Unknown command",
+      "command_no_output": "(command produced no output)",
+      "command_exit_code_unknown": "unknown",
+      "command_duration_unknown": "duration unknown",
+      "duration_seconds": "{seconds}s",
+      "duration_minutes": "{minutes}m {seconds}s",
+      "explored": "Explored",
+      "file_added": "Added",
+      "file_edited": "Edited",
+      "file_deleted": "Deleted",
+      "file_edit_failed": "Edit failed",
+      "file_edit_declined": "Edit declined",
+      "web_search_started": "Browsing the web",
+      "web_search_completed": "Searched the web",
+      "skill_attached": "Skill attached:",
+      "review_started": "Code review started",
+      "review_completed": "Code review finished",
+      "image_generation_started": "Generating image",
+      "image_generation_completed": "Image generated",
+      "image_generation_failed": "Image generation failed",
+      "image_generation_limit": "usage limit exceeded",
+      "subagent_started": "Subagent started",
+      "subagent_completed": "Subagent completed",
+      "subagent_interrupted": "Subagent interrupted",
+      "subagent_failed": "Subagent failed",
+      "mcp_started": "MCP started",
+      "mcp_completed": "MCP completed",
+      "mcp_failed": "MCP failed",
+      "mcp_server_status": "MCP server status",
+      "mcp_duration": " · {duration}",
+      "command_truncated": "\n... command truncated"
+    }
+  },
+  "errors": {
+    "label": {
+      "read_status": "Could not read Codex status. Check authentication and settings.",
+      "codex_auth": "Could not start Codex. Check ChatGPT sign-in for the user running the bot.",
+      "rpc_start": "Codex app-server rejected the task start.\nRPC {code}: {detail}",
+      "codex_start": "Could not start Codex. Check the Codex settings in the TeleCodex environment.",
+      "shell_exec": "Could not run the command.",
+      "update_failed": "Could not process the message. Check the service logs.",
+      "auth_expired": "<strong>ChatGPT authentication</strong> in Codex has expired. Run <code>codex login</code> as the TeleCodex user and restart the bot.",
+      "transport_closed": "The connection to Codex app-server was closed."
+    }
+  },
+  "common": {
+    "label": {
+      "stale_button": "This button is no longer active",
+      "no_chat": "There is no active Codex chat."
+    },
+    "buttons": {
+      "cancel": "Cancel",
+      "back_to_list": "‹ Back to list",
+      "back": "‹ Back",
+      "confirm": "Confirm",
+      "decline": "Decline"
+    },
+    "values": {
+      "no_active_chat": "no active chat",
+      "default_codex_model": "default Codex model",
+      "no_data": "no data",
+      "oauth_name": "OAuth"
+    }
+  },
+  "documents": {
+    "label": {
+      "too_large": "File “{filename}” exceeds the Telegram Bot API upload limit of 20 MB.",
+      "download_failed": "Could not download “{filename}” from Telegram.",
+      "save_failed": "Could not safely save “{filename}” in the project directory.",
+      "processing_failed": "Could not process the attachment. Check the TeleCodex log.",
+      "converter_missing": "MarkItDown was not found to process “{filename}”. Reinstall TeleCodex with: <code>python -m pip install -e .</code>",
+      "conversion_failed": "Could not extract text from “{filename}”.",
+      "empty": "No text was found in “{filename}”. It may be a scan; OCR is not enabled yet.",
+      "pending_user_input": "Codex is waiting for a reply. Send it as text or a voice message; send other attachments separately."
+    },
+    "values": {
+      "default_prompt": "Review the attached files and help with them.",
+      "paths_heading": "Files attached by the user:",
+      "read_instruction": "Review the listed files before replying. For PDFs and Office documents, use the extracted Markdown; the originals are also available at the specified paths."
+    }
+  },
+  "audio": {
+    "label": {
+      "too_long": "Audio is longer than the {seconds}-second limit.",
+      "invalid_file": "Could not read the audio file.",
+      "transcriber_missing": "The local transcription module is not installed. Reinstall TeleCodex: <code>python -m pip install -e .</code>",
+      "model_load_failed": "Could not load the local speech recognition model. Check available memory and network access for the initial model download.",
+      "transcription_failed": "Could not transcribe the audio. Try sending it as a voice note or MP3.",
+      "empty": "No speech could be recognized in the audio.",
+      "transcript": "<strong>Transcribed:</strong>\n{transcript}"
+    }
+  },
+  "shell": {
+    "label": {
+      "usage": "Provide a command after /shell",
+      "started": "<strong>Interactive shell opened</strong> in {cwd}. Regular messages now run in the shell. The cd command changes only the shell directory; change the Codex directory with /new or /chats. /stop — Ctrl+C; /exit — return to Codex.",
+      "already_open": "Interactive shell is already open in {cwd}.",
+      "closed": "Shell closed. Regular messages are being sent to Codex again.",
+      "closed_on_chat_switch": "Interactive shell closed; regular messages now go to Codex.",
+      "not_open": "Interactive shell is not open. Send /shell.",
+      "start_failed": "Could not open the interactive shell. Check the TeleCodex log.",
+      "attachments_unsupported": "The interactive shell accepts text only. Send /exit to send an attachment to Codex.",
+      "input_too_long": "Message is too long for the interactive shell.",
+      "stop_requested": "Ctrl+C was sent to the current shell process.",
+      "stop_idle": "No command is running in the shell.",
+      "idle_closed": "Shell closed after 30 minutes of inactivity. Send /shell to open a new session.",
+      "process_closed": "Shell process exited. Send /shell to open a new session.",
+      "reader_closed": "Shell connection lost. Send /shell to open a new session.",
+      "result": "{state}\n\n{output}"
+    },
+    "values": {
+      "timeout": "timed out",
+      "exit_code": "exit code: {code}",
+      "no_output": "(no output)",
+      "output_truncated": "\n... only the first 64 KiB were captured"
+    }
+  },
+  "models": {
+    "label": {
+      "list_failure": "Could not get the list of Codex models.",
+      "empty": "Codex returned no available models.",
+      "prompt": "Choose a Codex model.\nCurrent: <strong>{current}</strong>",
+      "effort_prompt": "Model: <strong>{model}</strong>\nChoose the reasoning effort. Model default: {default_effort}.",
+      "selection_failed": "Could not apply the model.",
+      "selection_saved": "Model and reasoning effort saved",
+      "expired": "Model list is out of date. Send /model",
+      "invalid_page": "No such page",
+      "unknown": "Unknown model"
+    },
+    "buttons": {
+      "reset": "Reset model settings",
+      "default_effort": "Default ({effort})",
+      "back": "‹ Back to models",
+      "effort_names": {
+        "none": "No reasoning (none)",
+        "minimal": "Minimal (minimal)",
+        "low": "Low (low)",
+        "medium": "Medium (medium)",
+        "high": "High (high)",
+        "xhigh": "Very high (xhigh)",
+        "max": "Maximum (max)"
+      }
+    },
+    "values": {
+      "busy_notice": "\nThe task is already running; the selection will apply to the next one.",
+      "codex_default_effort": "model setting",
+      "current_effort": " · {effort}",
+      "current_effort_default": " · default ({effort})"
+    }
+  },
+  "directories": {
+    "label": {
+      "prompt": "Choose a <strong>directory</strong> for the new chat.\nCurrent: {path}",
+      "created": "<strong>New chat created.</strong>\nDirectory: {path}",
+      "read_failed": "Could not read the directory list.",
+      "create_failed": "Could not create a Codex chat. Check the logs.",
+      "stale": "Directory list is out of date. Send /new."
+    },
+    "buttons": {
+      "up": "..",
+      "choose": "Choose this directory"
+    }
+  },
+  "chats": {
+    "label": {
+      "prompt": "Choose a Codex chat to view its details.\nCurrent directory: {current}",
+      "empty": "There are no saved chats in the available directories.",
+      "list_failed": "Could not get the list of Codex chats.",
+      "stale": "Chat list is out of date. Send /chats.",
+      "resume_failed": "Could not resume the selected Codex chat.",
+      "loading": "Loading chat...",
+      "detail": "Chat: <strong>{name}</strong>\nDirectory: {path}\n\nLast Codex message:\n{message}",
+      "no_ai_message": "There are no Codex messages in this chat yet.",
+      "preview_unavailable": "Could not load the last Codex message.",
+      "active_writer": "Chat “{label}” is currently <strong>open in another</strong> Codex session. You can retry connecting or open a copy.",
+      "fork_failed": "Could not open a copy of chat “{label}”. The original chat was not changed. You can retry or return to the list.",
+      "forked": "<strong>Chat copy opened:</strong>\n{label}\nDirectory: {path}\nThe original chat was not changed.",
+      "selected": "<strong>Chat selected:</strong>\n{label}\nDirectory: {path}"
+    },
+    "buttons": {
+      "untitled": "Untitled",
+      "choose": "Choose",
+      "copy": "Copy",
+      "retry": "Retry",
+      "fork": "Open a copy"
+    }
+  },
+  "thread_switch": {
+    "label": {
+      "confirm_new": "Codex is still working on a task. <strong>Stop it</strong> and start a new chat in {path}? If the current task result was not saved in time, it will be unknown. The request will not be retried.",
+      "confirm_chat": "Codex is still working on a task. <strong>Stop it</strong> and switch to chat “{label}”? If the current task result was not saved in time, it will be unknown. The request will not be retried.",
+      "cancelled": "The current chat and task were left unchanged.",
+      "new_completed": "New chat opened in {path}.",
+      "chat_completed": "Selected chat “{label}” in {path}.",
+      "failed": "Could not switch chats. The current chat was preserved; check /doctor and try again.",
+      "stale": "This chat switch request is no longer active."
+    },
+    "buttons": {
+      "confirm_button": "Stop and switch",
+      "cancel_button": "Leave as is"
+    }
+  },
+  "permissions": {
+    "label": {
+      "prompt": "Choose the permission mode for {scope}.\n<strong>Ask</strong> — Codex works in the project; confirmation requests arrive in this chat.\n<strong>Auto-review</strong> — Codex evaluates permission requests itself.\n<strong>Full access</strong> — removes Codex restrictions.\n<strong>Read-only</strong> — prevents file writes.\n{current}",
+      "selection_saved": "Permission mode saved. It will apply to the next task; a task already running will keep its current permissions.",
+      "save_failed": "Could not save the permission mode.",
+      "stale": "Permission mode list is out of date. Send /permissions.",
+      "filesystem_denied": "Codex requested elevated file permissions. They were not granted; read and write restrictions remain unchanged.",
+      "network_request": "Codex requests <strong>network access</strong>.\n{reason}",
+      "network_request_with_filesystem": "Codex requests <strong>network access</strong>.\n{filesystem_note}\n{reason}"
+    },
+    "buttons": {
+      "mode_names": {
+        "ask": "Ask when needed",
+        "auto_review": "Auto-review requests",
+        "full_access": "Full access",
+        "read_only": "Read-only"
+      }
+    },
+    "values": {
+      "current_thread": "current chat",
+      "next_thread": "new chat",
+      "current": "Current: <strong>{mode}</strong>.",
+      "current_unknown": "The mode for this chat is unknown; the selected value will apply to the next task.",
+      "current_default": "Current Codex policy: {policy}.",
+      "next_turn": "\nThe current task will continue with its existing permissions. While it runs, all messages go to it; the selected mode will apply only to the next task.",
+      "filesystem_note": "Elevated file permissions were not granted; file restrictions remain unchanged.",
+      "default_reason": "Access is needed for the current task."
+    }
+  },
+  "rename": {
+    "label": {
+      "usage": "Provide a name: /rename new name",
+      "too_long": "Name must be 100 characters or fewer.",
+      "no_chat": "There is no active chat to rename.",
+      "failed": "Could not rename the chat.",
+      "saved": "Chat renamed: <strong>{name}</strong>"
+    }
+  },
+  "thread_commands": {
+    "label": {
+      "busy": "Wait for the current task to finish, then try the command again.",
+      "delete_confirmation": "Permanently delete the current chat <strong>forever</strong>? Codex will also delete all child chats created from it. This will affect all bot users who selected those chats. <strong>This cannot be undone</strong>.",
+      "delete_cancelled": "Deletion cancelled.",
+      "delete_stale": "The current chat has changed. Send /delete and confirm the deletion again.",
+      "delete_failed": "Could not delete the Codex chat.",
+      "deleted": "The Codex chat and all child chats created from it have been <strong>deleted</strong>. Your next message will start a new chat in the same directory.",
+      "fork_failed": "Could not create a copy of the Codex chat.",
+      "fork_waiting": "The chat copy will be created after the current task and background commands finish. Current work continues.",
+      "fork_already_waiting": "A chat copy is already waiting for the current task to finish.",
+      "forked": "<strong>Chat copy created.</strong> Work is continuing in it; the original chat was preserved.",
+      "forked_shell_closed": "<strong>Chat copy created.</strong> Work is continuing in it; the original chat was preserved. Interactive shell closed; regular messages now go to Codex.",
+      "compact_failed": "Could not start context compaction.",
+      "compact_queued": "Compaction queued. It will start after the current task and background commands finish.",
+      "input_queued_after_compact": "Message queued after compaction (position {position}).",
+      "compact_queue_full": "Queue after compaction is full; message was not accepted.",
+      "compact_queue_wait_failed": "The queue after compaction is waiting for Codex recovery. Check /status; new messages remain queued.",
+      "compact_queue_discarded": "Queue after compaction cleared: {count} messages removed.",
+      "compact_cancelled": "Pending context compaction cancelled."
+    },
+    "buttons": {
+      "delete_confirm_button": "Delete forever"
+    }
+  },
+  "plan": {
+    "label": {
+      "enabled": "Codex planning mode enabled.",
+      "disabled": "Codex Default mode enabled.",
+      "unavailable": "This version of Codex app-server does not support built-in planning mode.",
+      "failed": "Could not change the Codex mode. Check the logs and try again."
+    }
+  },
+  "goal": {
+    "label": {
+      "none": "There is no goal in this chat.",
+      "unavailable": "This version of Codex app-server does not support goals.",
+      "failed": "Could not read or change the goal. Check the logs and try again.",
+      "started": "<strong>Goal set.</strong> Codex will keep working until it is achieved or stopped.",
+      "updated": "Goal updated.",
+      "edit_prompt": "Reply to this message with the new goal text. It will replace the current goal; /cancel will cancel the change.",
+      "edit_cancelled": "Goal edit cancelled.",
+      "edit_text_only": "Send the new goal as a regular text message without attachments.",
+      "edit_stale": "The chat changed, so the goal was not updated. Send /goal edit in the current chat.",
+      "paused": "Goal paused.",
+      "resumed": "Goal resumed. Codex will continue working.",
+      "cleared": "Goal cleared.",
+      "current": "Goal: <strong>{objective}</strong>\nStatus: <strong>{status}</strong>\nUsed: {tokens} tokens · {seconds} sec.\nToken budget: {budget}"
+    },
+    "values": {
+      "no_budget": "not set",
+      "status": {
+        "active": "active",
+        "paused": "paused",
+        "blocked": "blocked",
+        "usageLimited": "account limit reached",
+        "budgetLimited": "goal budget exhausted",
+        "complete": "complete",
+        "unknown": "unknown"
+      }
+    }
+  },
+  "fast": {
+    "label": {
+      "usage": "This command takes no arguments. Send /fast to toggle fast mode.",
+      "enabled": "<strong>Fast mode enabled</strong> for the current model. It uses up your limit faster.",
+      "disabled": "Standard speed restored for the current chat.",
+      "unavailable": "Fast mode is not available for the current model.",
+      "failed": "Could not change the model speed. Check the logs and try again."
+    }
+  },
+  "skills": {
+    "label": {
+      "menu": "<strong>Codex skills</strong>\n{selected}\nChoose an action.",
+      "list_title": "{mode} · page {current}/{total}",
+      "manage_notice": "The setting will be saved in Codex and shared across all chats where this skill is available.",
+      "selected_toast": "Skill selected",
+      "selected_next": "<strong>Skill “{name}”</strong> will be applied to the next task. Send the task in a separate message.",
+      "disabled": "This skill is disabled. Enable it first with /skills.",
+      "empty": "No skills found for the current project.",
+      "list_failed": "Could not get the list of Codex skills.",
+      "stale": "Skills menu is out of date. Send /skills again.",
+      "select_failed": "Could not select the skill.",
+      "selected_stale": "The selected skill is no longer available. Send /skills and select it again.",
+      "updated": "Skill setting changed",
+      "update_failed": "Could not change the skill setting."
+    },
+    "buttons": {
+      "use_button": "Apply skill to the next task",
+      "manage_button": "Enable / disable skills",
+      "page": "{current}/{total}",
+      "enabled_prefix": "On · {name}",
+      "disabled_prefix": "Off · {name}"
+    },
+    "values": {
+      "selected": "Next task: <strong>{name}</strong>",
+      "none_selected": "No skill selected for the next task.",
+      "actions": {
+        "use": "Choose a skill for the next task",
+        "manage": "Enable or disable a skill"
+      }
+    }
+  },
+  "memories": {
+    "label": {
+      "prompt": "<strong>Codex local memory</strong>\n{scope}: <strong>{use_state}</strong>\nMemory creation in the TeleCodex user's Codex Home: <strong>{generate_state}</strong>\nThis setting is shared by Codex CLI and TeleCodex for this user.",
+      "generate_confirmation": "This will change the <strong>shared memory creation setting</strong> in the Codex Home used by TeleCodex and Codex CLI. Continue?",
+      "reset_confirmation": "<strong>Clear</strong> all local memory files in the Codex Home used by TeleCodex and Codex CLI? This will delete memory for all chats; <strong>this cannot be undone</strong>.",
+      "reset_done": "Codex local memory cleared.",
+      "reset_failed": "Could not clear Codex local memory.",
+      "feature_disabled": "The memory feature is currently disabled in Codex. You can enable it for new chats in the Codex Home used by TeleCodex.",
+      "feature_enabled": "Codex memory is enabled for new chats in the shared Codex Home.",
+      "saved": "Memory setting saved",
+      "read_failed": "Could not read Codex memory settings.",
+      "save_failed": "Could not change the Codex memory setting.",
+      "stale": "Memory menu is out of date. Send /memories again."
+    },
+    "buttons": {
+      "enable_use_button": "Use in this chat",
+      "disable_use_button": "Do not use in this chat",
+      "generate_button": "Create memory: {state}",
+      "confirm_button": "Change shared setting",
+      "reset_button": "Reset all Codex memory",
+      "reset_confirm_button": "Clear Codex Home memory",
+      "enable_button": "Enable for new chats"
+    },
+    "values": {
+      "current_scope": "For this chat (last value saved by TeleCodex)",
+      "new_scope": "For new chats in this Telegram conversation",
+      "enabled": "enabled",
+      "disabled": "disabled",
+      "unknown": "unknown; specify explicitly"
+    }
+  },
+  "mcp": {
+    "label": {
+      "usage": "Use /mcp, /mcp verbose, /mcp add, or /mcp login name.",
+      "list_failed": "Could not get the list of Codex MCP servers.",
+      "list_title": "<strong>Codex MCP servers</strong> · page {current}/{total}\nSettings are shared by TeleCodex and Codex CLI for this Linux user.",
+      "empty": "No servers yet. Tap “Add server”.",
+      "plugin_managed_short": "This server is managed by a Codex plugin.",
+      "tools_title": "<strong>Tools</strong> · {name} · page {current}/{total}",
+      "tools_empty": "The server did not declare any tools.",
+      "tools_unavailable": "Could not load the tool list.",
+      "choose_transport": "<strong>Add an MCP server</strong>\nConfiguration will be shared by Codex CLI and TeleCodex for this Linux user. Choose a connection type.",
+      "ask_name": "Send a short server name using Latin letters, digits, hyphens, or underscores.",
+      "ask_command": "Send the path to an executable or a command name. After confirmation, the command will run as the TeleCodex system user.",
+      "ask_args": "Send arguments as a JSON array of strings, for example [\"-y\", \"package\"]. Send [] for no arguments. <strong>Do not include</strong> tokens, passwords, or HTTP headers in the arguments — use allowed environment variables.",
+      "ask_cwd": "Send an existing absolute working directory, or “-” to leave it unspecified.",
+      "ask_env_vars": "Send comma-separated variable names from TELECODEX_MCP_ENV_VARS. Values are set only in the TeleCodex process environment. Send “-” if no variables are needed.",
+      "ask_url": "Send the server URL using http:// or https:// without a username, password, query parameters, or fragment.",
+      "choose_http_auth": "Choose an authentication method for the HTTP server.",
+      "ask_bearer_env": "Send the name of an allowed environment variable containing the bearer token. <strong>Do not send</strong> the value to the bot.",
+      "confirm_add": "Add MCP server {name}?\nThe configuration will be available to all TeleCodex chats and Codex CLI for this user. The local STDIO process will run as the TeleCodex system user and is not restricted by the Codex sandbox itself. Connect only <strong>trusted servers</strong>.\n{detail}",
+      "summary_stdio": "Transport: STDIO\nCommand and arguments: {command}\nWorking directory: {cwd}\nAllowed environment variables: {env_vars}",
+      "summary_http": "Transport: Streamable HTTP\nURL: {url}\nAuthentication: {auth}\nBearer variable name: {env_var}",
+      "input_invalid": "That format did not work. Try again or send /cancel.",
+      "wizard_error": "Could not continue setup. Send /mcp to start over.",
+      "saving": "Saving MCP settings...",
+      "added": "Server <strong>{name}</strong> added. Active Codex sessions are being updated.",
+      "reload_partial": "Configuration saved, but <strong>not updated</strong> in {count} active Codex sessions. New sessions will read it when they start; check the logs before using MCP.",
+      "add_rejected": "Configuration rejected: check the name, address, and list of allowed environment variables.",
+      "operation_failed": "Could not perform the MCP server operation. Check the TeleCodex logs.",
+      "remove_confirmation": "Remove MCP server <strong>{name}</strong> from the shared Codex Home? This will disable it in all TeleCodex chats and Codex CLI for this user.",
+      "confirm_enable": "Enable MCP server <strong>{name}</strong> in the shared Codex Home? It will be available in all TeleCodex chats and Codex CLI for this user.",
+      "confirm_disable": "Disable MCP server <strong>{name}</strong> in all TeleCodex chats and Codex CLI for this user?",
+      "confirm_logout": "Remove the saved OAuth authorization for MCP server <strong>{name}</strong> from all Codex sessions in TeleCodex and Codex CLI for this user?",
+      "removing": "Removing MCP server...",
+      "removed": "Server {name} removed from the shared Codex Home.",
+      "logged_out": "OAuth sign-in for {name} was reset.",
+      "stale": "This MCP menu is out of date. Send /mcp again.",
+      "owner_only": "Only the operator who started this setup can complete it.",
+      "oauth_starting": "Starting OAuth sign-in...",
+      "oauth_start_failed": "Could not start OAuth sign-in for the MCP server.",
+      "oauth_local_callback": "The MCP server's OAuth callback returns to localhost in the Linux environment where TeleCodex is running. This link cannot complete sign-in from a phone. In a terminal in that environment, run:\n{command}\nOpen the link shown in the terminal. After authorization, copy the full redirect URL back into that terminal. <strong>Do not send</strong> the redirect URL or code in Telegram.",
+      "oauth_open_url": "Open the authorization page for {name}. Codex will confirm the result in the chat when complete.",
+      "elicitation_unsupported": "MCP server {name} requested an unsupported confirmation type; the request was declined.",
+      "elicitation_url": "MCP server {name} asks you to <strong>confirm an action</strong>.\n{message}\nOpen the link, then tap “Continue”.",
+      "elicitation_open_url": "Open link",
+      "elicitation_use_buttons": "Use the buttons in the message to respond to the MCP request. The /stop and /status commands still work.",
+      "elicitation_accept": "Continue",
+      "elicitation_cancel": "Cancel",
+      "elicitation_form": "MCP server {name} asks you to <strong>fill out a form</strong>.\n{message}\n{fields}\n\nReply with a single JSON object, for example {{\"field\": \"value\"}}. The data will be sent to the MCP server.",
+      "elicitation_form_confirmation": "MCP server {name} asks you to <strong>confirm an action</strong>.\n{message}\nConfirm the request using the button below; your approval will be sent to the MCP server.",
+      "elicitation_json_required": "This form requires a JSON object as text.",
+      "elicitation_json_invalid": "Invalid JSON: check the required fields and value types, then send the object again.",
+      "elicitation_submitted": "Response to the MCP request sent.",
+      "elicitation_declined": "MCP request declined.",
+      "elicitation_closed": "The MCP request is already closed.",
+      "elicitation_expired": "Timed out waiting for an MCP response."
+    },
+    "buttons": {
+      "add_button": "Add server",
+      "refresh_button": "Refresh",
+      "tools_button": "Tools",
+      "login_button": "Sign in with OAuth",
+      "logout_button": "Sign out of OAuth",
+      "enable_button": "Enable",
+      "disable_button": "Disable",
+      "remove_button": "Remove",
+      "confirm_remove_button": "Remove server",
+      "stdio_button": "Local process (STDIO)",
+      "http_button": "Streamable HTTP",
+      "auth_none_button": "No authentication",
+      "auth_oauth_button": "OAuth",
+      "auth_bearer_button": "Bearer token from env",
+      "confirm_add_button": "Add server",
+      "oauth_open_button": "Open authorization"
+    },
+    "values": {
+      "verbose_entry": "{name} · status {runtime} · authentication {auth} · tools {tools} · {origin}",
+      "verbose_tools": "Tools: {tools}",
+      "detail_title": "MCP server: <strong>{name}</strong>",
+      "detail_runtime": "Status: <strong>{status}</strong>",
+      "detail_auth": "Authentication: <strong>{status}</strong>",
+      "detail_transport": "Connection: {transport}",
+      "detail_tools": "Tools found: {count}",
+      "detail_origin": "Address: {origin}",
+      "detail_server_info": "Server: {info}",
+      "plugin_managed": "Configuration is managed by the Codex plugin: {plugin}.",
+      "runtime": {
+        "notStarted": "not started yet",
+        "starting": "connecting",
+        "connected": "connected",
+        "authenticationRequired": "authentication required",
+        "failed": "failed to start",
+        "cancelled": "startup cancelled",
+        "disabled": "disabled"
+      },
+      "auth": {
+        "unknown": "unknown",
+        "unsupported": "unsupported",
+        "notLoggedIn": "not signed in",
+        "bearerToken": "bearer token"
+      },
+      "transport": {
+        "http": "Streamable HTTP",
+        "stdio": "local STDIO process"
+      },
+      "tool_read_only": " (read-only)",
+      "auth_mode": {
+        "none": "no authentication",
+        "bearer": "bearer token from env"
+      },
+      "default_cwd": "not set",
+      "none": "none"
+    }
+  },
+  "init": {
+    "label": {
+      "path_unavailable": "Could not determine the current project directory inside the allowed workspace.",
+      "already_exists": "File {path} already exists and <strong>will not be overwritten</strong>. To change it, ask Codex in a regular message."
+    }
+  },
+  "ps": {
+    "label": {
+      "no_chat": "First select a Codex chat with a project directory.",
+      "empty": "There are no running background terminals in the current chat.",
+      "list_failed": "Could not get the list of Codex background terminals.",
+      "list_title": "<strong>Background terminals</strong> for the current chat · {current}/{total}",
+      "detail": "Command: {command}\nDirectory: {cwd}\n{resources}",
+      "stopped": "Background terminal stopped.",
+      "stale": "This list is out of date. Send /ps again.",
+      "action_failed": "Could not stop the background terminal."
+    },
+    "buttons": {
+      "stop_button": "Stop"
+    },
+    "values": {
+      "list_item": "Command: {command}\nDirectory: {cwd}\n{resources}",
+      "resources": "PID {pid} · CPU {cpu} · memory {memory}",
+      "cwd_unknown": "directory unknown"
+    }
+  },
+  "approval": {
+    "label": {
+      "closed": "Request is already closed",
+      "unknown_decision": "Unknown decision",
+      "sent": "Decision sent",
+      "allow_once": "Allow once",
+      "allow_task": "Allow for task",
+      "allow_session": "Allow for session",
+      "request": "Codex requests permission for <strong>{kind}</strong>.\n{detail}"
+    },
+    "values": {
+      "network_kind": "network access",
+      "network_detail": "Network: {protocol} › {host}",
+      "filesystem_kind": "file changes",
+      "command_kind": "a command",
+      "command_detail": "Command: {command}",
+      "default_reason": "Codex requested confirmation"
+    }
+  },
+  "user_input": {
+    "label": {
+      "title": "<strong>Codex is waiting for your reply:</strong>",
+      "instructions": "Reply in one message. The /stop and /status commands still work.",
+      "timeout": "Timed out waiting for a reply.",
+      "delivered": "Reply sent to Codex."
+    },
+    "values": {
+      "question_fallback": "Clarify the task",
+      "numbered_question": "{index}. {question}",
+      "options": "   Options: {options}"
+    }
+  },
+  "mode": {
+    "label": {
+      "prompt": "<strong>Codex output mode</strong> (current: {current}):\nAll options show Codex messages and the final response. In “Answers with quiet updates” mode, intermediate messages arrive silently; the final response, errors, and questions for you use regular notifications. Detailed log also shows commands, file changes, and other tool events.",
+      "stale": "Mode list is out of date. Send /mode",
+      "save_failed": "Could not save the output mode. Try again."
+    },
+    "buttons": {
+      "names": {
+        "answers": "Answers only",
+        "quiet_answers": "Answers with quiet updates",
+        "detailed": "Detailed log"
+      }
+    }
+  },
+  "groups": {
+    "label": {
+      "only_group": "This command must be used inside a Telegram group.",
+      "setup_prompt": "Send <strong>trigger words</strong> separated by commas, for example: codex, telecodex. The bot forwards regular messages to Codex only if they start with one of these words. Only the operator who ran /group_add can complete setup. Send /group_remove to cancel setup.",
+      "setup_pending_other": "Another TeleCodex operator has already started trigger setup.",
+      "setup_invalid": "Could not parse the list. Send individual words separated by commas, for example: codex, telecodex. You can specify up to 20 words.",
+      "setup_cancelled": "Group setup cancelled. The group remains disconnected.",
+      "attached": "<strong>Group connected</strong> as a shared Codex chat. Triggers: {words}.",
+      "triggers_updated": "Group triggers updated: {words}.",
+      "trigger_empty": "Add a task after the trigger word, for example: “codex, look at this project”.",
+      "not_attached": "This group is not connected to TeleCodex.",
+      "detached": "Group disconnected. The Codex chat and its settings were preserved; reconnect the group with /group_add.",
+      "operator_only": "Only users listed in TELEGRAM_ALLOWED_USER_IDS can manage the group.",
+      "mode_prompt": "Message mode for this group (current: {current}).\n\nIn “All messages” mode, regular messages and media from users who can access the bot are sent directly to the shared Codex chat. Bot commands continue to work. Enable this mode <strong>only for a work group</strong>, or regular conversation will also be sent to Codex.",
+      "mode_saved": "This group's mode: {mode}.",
+      "mode_stale": "This group mode menu is no longer active. Send /group_mode.",
+      "mode_save_failed": "Could not save the group mode.",
+      "activity_skipped": "Some log updates were skipped because of a Telegram limit: {count}."
+    },
+    "buttons": {
+      "mode_names": {
+        "reply_or_trigger": "Reply to bot or trigger",
+        "all_messages": "All messages › Codex"
+      }
+    }
+  },
+  "files": {
+    "label": {
+      "browser": "<strong>Project files</strong>\n{path}",
+      "detail": "<strong>Project file</strong>\n{path}\nSize: {size}",
+      "stale": "This file menu is no longer active. Send /files.",
+      "read_failed": "Could not read project files.",
+      "download_failed": "Could not download the project file.",
+      "too_large": "File is larger than 50 MB and cannot be sent through Telegram.",
+      "preview_unavailable": "Preview is available only for small UTF-8 text files.",
+      "preview_header": "<strong>File preview</strong>\n{path}"
+    },
+    "buttons": {
+      "up": "↑ Up",
+      "download": "Download",
+      "preview": "Preview",
+      "back": "‹ Back to files"
+    },
+    "values": {
+      "preview_truncated": "\n\n... only the beginning of the file is shown."
+    }
+  },
+  "format": {
+    "values": {
+      "truncated": "\n... output truncated"
+    }
+  }
+}

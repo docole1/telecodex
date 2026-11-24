@@ -40,7 +40,7 @@ def _plain_html(text: str) -> str:
 
 class McpConfigTests(unittest.TestCase):
     def test_mcp_ui_uses_existing_russian_text_keys(self) -> None:
-        texts = json.loads(Path("src/telecodex/texts.json").read_text(encoding="utf-8"))["texts"]["ru"]
+        texts = json.loads(Path("src/telecodex/texts/ru.json").read_text(encoding="utf-8"))
 
         def contains(key: str) -> bool:
             value: Any = texts

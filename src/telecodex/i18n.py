@@ -39,15 +39,18 @@ class TextCatalog:
     """Load and format the bot's user-facing text from its packaged JSON catalog."""
 
     def __init__(self) -> None:
-        content = files("telecodex").joinpath("texts.json").read_text(encoding="utf-8")
-        raw = json.loads(content)
-        texts = raw.get("texts") if isinstance(raw, dict) else None
-        system = raw.get("system") if isinstance(raw, dict) else None
-        if not isinstance(texts, dict) or not isinstance(system, dict):
-            raise ValueError("texts.json must contain 'texts' and 'system' objects")
+        resource_dir = files("telecodex").joinpath("texts")
+        texts: dict[str, dict[str, Any]] = {}
         for language in SUPPORTED_LANGUAGES:
-            if not isinstance(texts.get(language), dict):
-                raise ValueError(f"texts.json must contain a '{language}' object")
+            content = resource_dir.joinpath(f"{language}.json").read_text(encoding="utf-8")
+            language_texts = json.loads(content)
+            if not isinstance(language_texts, dict):
+                raise ValueError(f"texts/{language}.json must contain an object")
+            texts[language] = language_texts
+        system_content = resource_dir.joinpath("system.json").read_text(encoding="utf-8")
+        system = json.loads(system_content)
+        if not isinstance(system, dict):
+            raise ValueError("texts/system.json must contain an object")
         self._texts: dict[str, dict[str, Any]] = texts
         self._system: dict[str, Any] = system
 
@@ -63,7 +66,7 @@ class TextCatalog:
     def system(self, system_key: str, **values: Any) -> str:
         template = self._lookup(self._system, system_key)
         if not isinstance(template, str):
-            raise ValueError(f"texts.json is missing system text '{system_key}'")
+            raise ValueError(f"texts/system.json is missing system text '{system_key}'")
         return _format_template(template, values)
 
     @staticmethod
