@@ -1,4 +1,5 @@
 .env
+.telecodex/
 plans/
 /docs/
 userbot_tester/

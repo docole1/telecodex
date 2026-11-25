@@ -20,6 +20,7 @@ from telecodex.telegram.pickers import FilesPicker
 from telecodex.telegram.updates import TelegramCallbackContext
 from telecodex.workspace_files import (
     WorkspaceEntry,
+    WorkspaceArchiveTooLarge,
     WorkspaceFileBrowser,
     WorkspaceFileTooLarge,
     WorkspaceFilesError,
@@ -126,6 +127,12 @@ class TelegramWorkspaceFilesController:
                 }
             )
         rows.extend(two_column_rows(buttons, 0))
+        rows.append(
+            [{
+                "text": self._text("files.buttons.download_folder"),
+                "callback_data": f"fb:{picker.token}:z",
+            }]
+        )
         count = page_count(len(picker.entries))
         if count > 1:
             rows.append(
@@ -216,6 +223,10 @@ class TelegramWorkspaceFilesController:
             await self.telegram.answer_callback_query(incoming.callback_id)
             if not await self._load_files_picker(incoming.chat_id, picker):
                 await self.telegram.send_message(incoming.chat_id, self._text("files.label.read_failed"))
+            return
+        if action == "z" and len(parts) == 3:
+            await self.telegram.answer_callback_query(incoming.callback_id)
+            await self._send_workspace_directory(incoming.chat_id, picker)
             return
         if action in {"o", "f"} and len(parts) == 4:
             try:
@@ -379,3 +390,51 @@ class TelegramWorkspaceFilesController:
                     level=logging.WARNING,
                 )
                 await self.telegram.send_message(chat_id, self._text("files.label.download_failed"))
+
+
+    async def _send_workspace_directory(
+        self,
+        chat_id: int,
+        picker: FilesPicker,
+    ) -> None:
+        browser = WorkspaceFileBrowser(self._workspace_root())
+        with tempfile.TemporaryDirectory(prefix="telecodex-workspace-archive-") as directory:
+            destination = Path(directory) / "folder.zip"
+            try:
+                filename, path = await asyncio.to_thread(
+                    browser.archive_directory,
+                    picker.current_path,
+                    destination,
+                )
+                await self.telegram.send_document(
+                    chat_id=chat_id,
+                    document=FSInputFile(path, filename=filename),
+                    reply_to_message_id=picker.message_id,
+                )
+            except WorkspaceArchiveTooLarge:
+                await self.telegram.send_message(
+                    chat_id,
+                    self._text("files.label.archive_too_large"),
+                )
+            except TelegramAPIError as exc:
+                self._log_failure(
+                    "Could not send workspace ZIP through Telegram",
+                    exc,
+                    event="telegram.files.archive_upload_failed",
+                    level=logging.WARNING,
+                )
+                await self.telegram.send_message(
+                    chat_id,
+                    self._text("files.label.download_failed"),
+                )
+            except WorkspaceFilesError as exc:
+                self._log_failure(
+                    "Could not create a ZIP from the workspace folder",
+                    exc,
+                    event="telegram.files.archive_failed",
+                    level=logging.WARNING,
+                )
+                await self.telegram.send_message(
+                    chat_id,
+                    self._text("files.label.archive_failed"),
+                )

@@ -772,12 +772,15 @@
       "read_failed": "Не удалось прочитать файлы проекта.",
       "download_failed": "Не удалось скачать файл проекта.",
       "too_large": "Файл больше 50 MB и не может быть отправлен через Telegram.",
+      "archive_too_large": "ZIP-архив папки превышает лимит Telegram в 50 MB.",
+      "archive_failed": "Не удалось создать ZIP-архив папки.",
       "preview_unavailable": "Предпросмотр доступен только для небольших UTF-8 текстовых файлов.",
       "preview_header": "<strong>Предпросмотр файла</strong>\n{path}"
     },
     "buttons": {
       "up": "↑ Вверх",
       "download": "Скачать",
+      "download_folder": "Скачать папку ZIP",
       "preview": "Предпросмотр",
       "back": "‹ К файлам"
     },

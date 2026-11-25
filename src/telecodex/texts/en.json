@@ -772,12 +772,15 @@
       "read_failed": "Could not read project files.",
       "download_failed": "Could not download the project file.",
       "too_large": "File is larger than 50 MB and cannot be sent through Telegram.",
+      "archive_too_large": "The folder ZIP exceeds Telegram's 50 MB limit.",
+      "archive_failed": "Could not create a ZIP archive for this folder.",
       "preview_unavailable": "Preview is available only for small UTF-8 text files.",
       "preview_header": "<strong>File preview</strong>\n{path}"
     },
     "buttons": {
       "up": "↑ Up",
       "download": "Download",
+      "download_folder": "Download folder ZIP",
       "preview": "Preview",
       "back": "‹ Back to files"
     },

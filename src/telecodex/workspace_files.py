@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 import stat
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 MAX_PREVIEW_BYTES = 32 * 1024
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+MAX_ARCHIVE_SOURCE_BYTES = 1024 * 1024 * 1024
+MAX_ARCHIVE_ENTRIES = 10_000
+ARCHIVE_COPY_CHUNK_BYTES = 64 * 1024
 
 
 class WorkspaceFilesError(RuntimeError):
@@ -15,6 +19,10 @@ class WorkspaceFilesError(RuntimeError):
 
 class WorkspaceFileTooLarge(WorkspaceFilesError):
     """The selected file exceeds Telegram's upload limit."""
+
+
+class WorkspaceArchiveTooLarge(WorkspaceFilesError):
+    """The selected folder archive exceeds safe size or entry limits."""
 
 
 class WorkspacePreviewUnavailable(WorkspaceFilesError):
@@ -130,6 +138,133 @@ class WorkspaceFileBrowser:
                 os.close(descriptor)
             except OSError:
                 pass
+
+    def archive_directory(self, directory: Path, destination: Path) -> tuple[str, Path]:
+        """Create a bounded ZIP containing regular files under a workspace folder."""
+        selected = self.resolve_directory(directory)
+        directory_name = selected.name or "workspace"
+        self._validate_archive_parts((directory_name,))
+        archive_name = f"{directory_name}.zip"
+        entry_count = 1
+        source_bytes = 0
+
+        def on_walk_error(error: OSError) -> None:
+            raise WorkspaceFilesError("Could not read the selected folder") from error
+
+        try:
+            with destination.open("xb", buffering=0) as output:
+                with zipfile.ZipFile(
+                    output,
+                    mode="w",
+                    compression=zipfile.ZIP_DEFLATED,
+                    compresslevel=6,
+                ) as archive:
+                    root_info = zipfile.ZipInfo(f"{directory_name}/")
+                    root_info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                    archive.writestr(root_info, b"")
+
+                    for current, directory_names, file_names in os.walk(
+                        selected,
+                        topdown=True,
+                        followlinks=False,
+                        onerror=on_walk_error,
+                    ):
+                        current_path = Path(current)
+                        safe_directory_names: list[str] = []
+                        for name in sorted(directory_names):
+                            child = current_path / name
+                            try:
+                                metadata = child.stat(follow_symlinks=False)
+                            except OSError as exc:
+                                raise WorkspaceFilesError(
+                                    "Could not inspect a folder in the selected directory"
+                                ) from exc
+                            if not stat.S_ISDIR(metadata.st_mode):
+                                continue
+                            safe_directory_names.append(name)
+                            entry_count += 1
+                            if entry_count > MAX_ARCHIVE_ENTRIES:
+                                raise WorkspaceArchiveTooLarge
+                            member = self._archive_member_name(
+                                selected,
+                                child,
+                                directory_name,
+                                is_directory=True,
+                            )
+                            directory_info = zipfile.ZipInfo(member)
+                            directory_info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                            archive.writestr(directory_info, b"")
+                            if output.tell() > MAX_DOWNLOAD_BYTES:
+                                raise WorkspaceArchiveTooLarge
+
+                        directory_names[:] = safe_directory_names
+                        for name in sorted(file_names):
+                            child = current_path / name
+                            try:
+                                metadata = child.stat(follow_symlinks=False)
+                            except OSError as exc:
+                                raise WorkspaceFilesError(
+                                    "Could not inspect a file in the selected directory"
+                                ) from exc
+                            if not stat.S_ISREG(metadata.st_mode):
+                                continue
+                            entry_count += 1
+                            if entry_count > MAX_ARCHIVE_ENTRIES:
+                                raise WorkspaceArchiveTooLarge
+                            if source_bytes + metadata.st_size > MAX_ARCHIVE_SOURCE_BYTES:
+                                raise WorkspaceArchiveTooLarge
+                            member = self._archive_member_name(
+                                selected,
+                                child,
+                                directory_name,
+                            )
+                            descriptor = self._open_regular_file(child)
+                            with os.fdopen(descriptor, "rb") as source:
+                                with archive.open(member, "w") as archived_file:
+                                    while chunk := source.read(ARCHIVE_COPY_CHUNK_BYTES):
+                                        source_bytes += len(chunk)
+                                        if source_bytes > MAX_ARCHIVE_SOURCE_BYTES:
+                                            raise WorkspaceArchiveTooLarge
+                                        archived_file.write(chunk)
+                                        if output.tell() > MAX_DOWNLOAD_BYTES:
+                                            raise WorkspaceArchiveTooLarge
+
+            if destination.stat().st_size > MAX_DOWNLOAD_BYTES:
+                raise WorkspaceArchiveTooLarge
+        except WorkspaceFilesError:
+            destination.unlink(missing_ok=True)
+            raise
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+            destination.unlink(missing_ok=True)
+            raise WorkspaceFilesError("Could not create a ZIP for the selected folder") from exc
+        return archive_name, destination
+
+    @staticmethod
+    def _validate_archive_parts(parts: tuple[str, ...]) -> None:
+        if any(
+            not part
+            or part in {".", ".."}
+            or any(character in part for character in ("/", "\\", "\0", ":"))
+            for part in parts
+        ):
+            raise WorkspaceFilesError("The selected folder contains an unsupported archive path")
+
+    def _archive_member_name(
+        self,
+        selected: Path,
+        path: Path,
+        directory_name: str,
+        *,
+        is_directory: bool = False,
+    ) -> str:
+        try:
+            relative_parts = path.relative_to(selected).parts
+        except ValueError as exc:
+            raise WorkspaceFilesError("A folder entry is outside the selected directory") from exc
+        parts = (directory_name, *relative_parts)
+        self._validate_archive_parts(parts)
+        member = "/".join(parts)
+        return member + "/" if is_directory else member
 
     def _open_regular_file(self, path: Path) -> int:
         validated = self._resolve(path)
