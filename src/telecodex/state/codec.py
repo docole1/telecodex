@@ -6,7 +6,7 @@ from typing import Any
 
 from telecodex.codex.permissions import PERMISSION_MODES
 from telecodex.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
-from telecodex.state.models import PendingTurnState, RuntimeState
+from telecodex.state.models import NewChatDefaults, PendingTurnState, RuntimeState
 
 RECOVERY_PHASES = {"starting", "running", "delivery_pending"}
 
@@ -15,6 +15,71 @@ RECOVERY_RESULT_STATUSES = {"completed", "interrupted", "failed", "unknown"}
 
 
 OUTPUT_MODES = {"answers", "detailed"}
+NEW_CHAT_OUTPUT_MODES = {"answers", "quiet_answers", "detailed"}
+
+
+def _new_chat_defaults_from_data(raw: dict[str, Any]) -> NewChatDefaults:
+    if not isinstance(raw, dict):
+        raise ValueError("Runtime state has an invalid operator defaults entry")
+    allowed_fields = {
+        "selected_model",
+        "selected_effort",
+        "default_permission_mode",
+        "selected_memory_mode",
+        "output_mode",
+        "group_all_messages_to_codex",
+    }
+    if not set(raw).issubset(allowed_fields):
+        raise ValueError("Runtime state has unsupported operator defaults fields")
+    defaults = NewChatDefaults(
+        selected_model=raw.get("selected_model"),
+        selected_effort=raw.get("selected_effort"),
+        default_permission_mode=raw.get("default_permission_mode"),
+        selected_memory_mode=raw.get("selected_memory_mode"),
+        output_mode=raw.get("output_mode"),
+        group_all_messages_to_codex=raw.get("group_all_messages_to_codex"),
+    )
+    _new_chat_defaults_to_data(defaults)
+    return defaults
+
+
+def _new_chat_defaults_to_data(defaults: NewChatDefaults) -> dict[str, Any]:
+    for field_name in ("selected_model", "selected_effort"):
+        value = getattr(defaults, field_name)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"New-chat defaults have an invalid {field_name}")
+    if defaults.selected_effort is not None and defaults.selected_model is None:
+        raise ValueError("New-chat defaults cannot set reasoning effort without a model")
+    if defaults.default_permission_mode is not None and (
+        not isinstance(defaults.default_permission_mode, str)
+        or defaults.default_permission_mode not in PERMISSION_MODES
+    ):
+        raise ValueError("New-chat defaults have an invalid default_permission_mode")
+    if (
+        defaults.selected_memory_mode is not None
+        and (
+            not isinstance(defaults.selected_memory_mode, str)
+            or defaults.selected_memory_mode not in {"enabled", "disabled"}
+        )
+    ):
+        raise ValueError("New-chat defaults have an invalid selected_memory_mode")
+    if defaults.output_mode is not None and (
+        not isinstance(defaults.output_mode, str)
+        or defaults.output_mode not in NEW_CHAT_OUTPUT_MODES
+    ):
+        raise ValueError("New-chat defaults have an invalid output_mode")
+    if defaults.group_all_messages_to_codex is not None and not isinstance(
+        defaults.group_all_messages_to_codex, bool
+    ):
+        raise ValueError("New-chat defaults have an invalid group mode")
+    return {
+        "selected_model": defaults.selected_model,
+        "selected_effort": defaults.selected_effort,
+        "default_permission_mode": defaults.default_permission_mode,
+        "selected_memory_mode": defaults.selected_memory_mode,
+        "output_mode": defaults.output_mode,
+        "group_all_messages_to_codex": defaults.group_all_messages_to_codex,
+    }
 
 
 def _pending_turn_from_data(value: Any) -> PendingTurnState | None:
@@ -106,6 +171,7 @@ def _empty_state() -> dict[str, Any]:
         "groups": {},
         "threads": {},
         "pending_media_groups": {},
+        "operator_defaults": {},
     }
 
 

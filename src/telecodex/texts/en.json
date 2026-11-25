@@ -1,7 +1,7 @@
 {
   "commands": {
     "label": {
-      "help": "Send your task as a regular message — Codex will run it in the selected directory. You can send voice messages, audio files, documents, and photos.\n\n<strong>Chats and projects</strong>\n/new — choose a directory and start a new chat\n/chats — choose a saved chat\n/rename name — rename the chat\n/fork — create a copy of the current chat\n/delete — delete the current chat and its copies\n/compact — compact the chat context\n/recap — get a brief summary without compacting the context\n/init — create AGENTS.md for the project if it does not exist\n/files — browse, open, and download project files\n\n<strong>Settings</strong>\n/model — choose a Codex model using a button\n/fast — toggle fast mode, if available\n/mode — choose answers, quiet updates, or a detailed log\n/plan — switch between Plan and Default; /plan task — start planning a task\n/goal objective — work until the goal is achieved; /goal — show status; /goal edit — edit the goal; /goal pause/resume/clear — manage the goal\n/permissions — choose the permission mode for the chat\n/skills — choose or configure Codex skills\n/memories — configure the use and creation of Codex local memory\n/mcp — view and configure Codex MCP servers; /mcp verbose — detailed list\n/language — choose the interface language\n\n<strong>Task control</strong>\n/stop — stop a Codex task or the current shell command\n/ps — background terminals for the current chat\n/shell — open an interactive shell in the TeleCodex environment; /shell command — run a single command\n/exit — close the interactive shell and return to Codex\n\n<strong>Diagnostics and recovery</strong>\n/status — chat and limit status\n/doctor — check the connection to Telegram and Codex\n/recover — restart Codex for the current chat while preserving its history\n\n<strong>Groups</strong>\n/group_add — connect a group\n/group_remove — disconnect a group or cancel its setup\n/group_mode — switch the group to sending all regular messages to Codex",
+      "help": "Send your task as a regular message — Codex will run it in the selected directory. You can send voice messages, audio files, documents, and photos.\n\n<strong>Chats and projects</strong>\n/new — choose a directory and start a new chat\n/chats — choose a saved chat\n/rename name — rename the chat\n/fork — create a copy of the current chat\n/delete — delete the current chat and its copies\n/compact — compact the chat context\n/recap — get a brief summary without compacting the context\n/init — create AGENTS.md for the project if it does not exist\n/files — browse, open, and download project files\n\n<strong>Settings</strong>\n/model — choose a Codex model using a button\n/defaults — set defaults for new chats\n/fast — toggle fast mode, if available\n/mode — choose answers, quiet updates, or a detailed log\n/plan — switch between Plan and Default; /plan task — start planning a task\n/goal objective — work until the goal is achieved; /goal — show status; /goal edit — edit the goal; /goal pause/resume/clear — manage the goal\n/permissions — choose the permission mode for the chat\n/skills — choose or configure Codex skills\n/memories — configure the use and creation of Codex local memory\n/mcp — view and configure Codex MCP servers; /mcp verbose — detailed list\n/language — choose the interface language\n\n<strong>Task control</strong>\n/stop — stop a Codex task or the current shell command\n/ps — background terminals for the current chat\n/shell — open an interactive shell in the TeleCodex environment; /shell command — run a single command\n/exit — close the interactive shell and return to Codex\n\n<strong>Diagnostics and recovery</strong>\n/status — chat and limit status\n/doctor — check the connection to Telegram and Codex\n/recover — restart Codex for the current chat while preserving its history\n\n<strong>Groups</strong>\n/group_add — connect a group\n/group_remove — disconnect a group or cancel its setup\n/group_mode — switch the group to sending all regular messages to Codex",
       "unknown": "Unknown command. Command list: /help.",
       "unknown_suggested": "/{command} is not a command. Maybe you meant one of these: {suggestions}. Command list: /help.",
       "private_only": "Use a private chat with the bot.",
@@ -698,6 +698,44 @@
         "quiet_answers": "Answers with quiet updates",
         "detailed": "Detailed log"
       }
+    }
+  },
+  "new_chat_defaults": {
+    "label": {
+      "private_only": "Set new-chat defaults in a private chat with the bot.",
+      "menu": "<strong>New-chat defaults</strong>\n\nModel: {model}\nPermissions: {permissions}\nReply mode: {mode}\nMemories: {memory}\nNew groups: {group_mode}\n\nThe profile is applied by /new. /mode separately changes the current Telegram chat. The group mode is applied the first time you use /group_add.",
+      "load_failed": "Could not load new-chat defaults.",
+      "models_failed": "Could not load the Codex model list.",
+      "models_empty": "Codex returned no available models.",
+      "save_failed": "Could not save new-chat defaults.",
+      "saved": "Saved for new chats.",
+      "stale": "This menu has expired. Send /defaults again.",
+      "model_prompt": "Model for new chats (current: {current}). Choose a model.",
+      "effort_prompt": "Model {model}. Choose the reasoning effort. Model default: {default_effort}.",
+      "permissions_prompt": "Permission mode for new chats (current: {current}).",
+      "mode_prompt": "Reply mode for new chats (current: {current}).",
+      "memory_prompt": "Memory use in new chats (current: {current}).",
+      "group_mode_prompt": "Message mode for new groups (current: {current}). “All messages” forwards ordinary chat to the shared Codex conversation. Use it only for a work group.",
+      "model_unavailable": "The model or reasoning effort in your profile is no longer available. Open /defaults and choose current values."
+    },
+    "buttons": {
+      "model": "Model",
+      "permissions": "Permissions",
+      "mode": "Reply mode",
+      "memory": "Memories",
+      "group_mode": "New group mode",
+      "reset": "Reset profile",
+      "use_codex_model": "Use Codex default model",
+      "use_codex_permissions": "Use Codex permission policy",
+      "default_effort": "Default ({effort})",
+      "use_chat_mode": "Use TeleCodex default",
+      "use_codex_memories": "Use Codex memory settings",
+      "use_group_default": "Replies or triggers"
+    },
+    "values": {
+      "codex_default": "Codex default",
+      "model_default_effort": "model default",
+      "chat_default_mode": "TeleCodex default"
     }
   },
   "groups": {

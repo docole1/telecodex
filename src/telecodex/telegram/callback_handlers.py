@@ -31,6 +31,13 @@ class TelegramCallbackHandlers:
         if telecodex_context_controller is not None:
             await telecodex_context_controller._handle_group_mode_callback(telecodex_context, self._parts(telecodex_context))
 
+    async def new_chat_defaults(self, callback_query: CallbackQuery, telecodex_context: TelegramCallbackContext, telecodex_context_controller: TelegramUserController | None = None, **_data) -> None:
+        if telecodex_context_controller is not None:
+            await telecodex_context_controller._handle_new_chat_defaults_callback(
+                telecodex_context,
+                self._parts(telecodex_context),
+            )
+
     async def skill(self, callback_query: CallbackQuery, telecodex_context: TelegramCallbackContext, telecodex_context_controller: TelegramUserController | None = None, **_data) -> None:
         if telecodex_context_controller is not None:
             await telecodex_context_controller._handle_skills_callback(telecodex_context, self._parts(telecodex_context))

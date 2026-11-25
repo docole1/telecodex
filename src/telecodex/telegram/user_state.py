@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from telecodex.state.models import NewChatDefaults
+
 
 @dataclass
 class PendingApproval:
@@ -45,6 +47,7 @@ class PendingThreadSwitch:
     picker_token: str | None = None
     picker_index: int | None = None
     source_thread_id: str | None = None
+    new_chat_defaults: NewChatDefaults | None = None
 
 
 @dataclass(frozen=True)

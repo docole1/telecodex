@@ -149,6 +149,7 @@ class TelegramUpdateRouters:
                 "settings_commands",
                 (
                     ("permissions", self.command_handlers.permissions),
+                    ("defaults", self.command_handlers.defaults),
                     ("plan", self.command_handlers.plan),
                     ("goal", self.command_handlers.goal),
                     ("model", self.command_handlers.model),
@@ -194,6 +195,7 @@ class TelegramUpdateRouters:
                     ("l", self.callback_handlers.language),
                     ("om", self.callback_handlers.output_mode),
                     ("gm", self.callback_handlers.group_mode),
+                    ("nd", self.callback_handlers.new_chat_defaults),
                 ),
             ),
             (

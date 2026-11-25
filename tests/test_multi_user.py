@@ -7,12 +7,21 @@ import json
 import tempfile
 import unittest
 from telecodex.config import AppConfig, ProxySettings, load_config
-from telecodex.state import PendingTurnState, RuntimeState, RuntimeStateStore, ThreadRuntimeState
+from telecodex.state import (
+    NewChatDefaults,
+    PendingTurnState,
+    RuntimeState,
+    RuntimeStateStore,
+    ThreadRuntimeState,
+)
 from telecodex.telegram.controller import TelegramController
+from telecodex.telegram.pickers import DirectoryPicker
 from telecodex.telegram.user_controller import PendingApproval, TelegramUserController
 
 from multi_user_test_support import (
+    callback_event,
     dispatch_controller_update,
+    dispatch_user_update,
     BOT_TRIGGER_CYRILLIC,
     CODEX_TRIGGER_CYRILLIC,
     FailingCodex,
@@ -274,11 +283,15 @@ class MultiUserStateTests(unittest.TestCase):
             self.assertIsNone(reloaded.complete_group_setup(-100124, 202, ("codex",)))
             self.assertEqual(
                 reloaded.complete_group_setup(
-                    -100124, 101, (CODEX_TRIGGER_CYRILLIC, KAWAII_TRIGGER_CYRILLIC)
+                    -100124,
+                    101,
+                    (CODEX_TRIGGER_CYRILLIC, KAWAII_TRIGGER_CYRILLIC),
+                    default_all_messages_to_codex=True,
                 ),
                 "attached",
             )
             self.assertTrue(reloaded.is_group_attached(-100124))
+            self.assertTrue(reloaded.group_all_messages_to_codex(-100124))
             russian_triggers = (CODEX_TRIGGER_CYRILLIC, KAWAII_TRIGGER_CYRILLIC)
             self.assertEqual(reloaded.group_trigger_words(-100124), russian_triggers)
 
@@ -292,10 +305,16 @@ class MultiUserStateTests(unittest.TestCase):
 
             self.assertEqual(reloaded.begin_group_setup(-100124, "Team", 202), "started")
             self.assertEqual(
-                reloaded.complete_group_setup(-100124, 202, ("help",)),
+                reloaded.complete_group_setup(
+                    -100124,
+                    202,
+                    ("help",),
+                    default_all_messages_to_codex=False,
+                ),
                 "updated",
             )
             self.assertEqual(reloaded.group_trigger_words(-100124), ("help",))
+            self.assertTrue(reloaded.group_all_messages_to_codex(-100124))
             self.assertEqual(reloaded.for_group(-100124).load().thread_id, "shared-thread")
 
     def test_old_group_state_loads_without_trigger_metadata(self) -> None:
@@ -340,6 +359,92 @@ class MultiUserStateTests(unittest.TestCase):
 
 
 class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_defaults_profile_stays_separate_and_is_applied_by_new(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_store = RuntimeStateStore(root / "state.sqlite3")
+            config = AppConfig(
+                telegram_bot_token="token",
+                telegram_allowed_user_ids=(101,),
+                workspace_root=root,
+                codex_bin="codex",
+                codex_model=None,
+                network_access=False,
+                approval_policy="on-request",
+                shell_timeout_seconds=60,
+                database_file=state_store.path,
+            )
+            telegram = FakeTelegram()
+            sessions: dict[int, FakeCodex] = {}
+
+            def make_session(user_id: int, _controller: Any) -> FakeCodex:
+                sessions[user_id] = FakeCodex()
+                return sessions[user_id]
+
+            controller = TelegramController(
+                config,
+                telegram,
+                object(),
+                make_session,
+                state_store=state_store,
+            )  # type: ignore[arg-type]
+            await dispatch_controller_update(controller, self._message_update(1, 101, "/defaults"))
+            user = controller.users[101]
+            picker = user.new_chat_defaults_ui.picker
+            self.assertIsNotNone(picker)
+            assert picker is not None and picker.message_id is not None
+
+            await dispatch_user_update(
+                user,
+                callback_event(
+                    2,
+                    "open-mode-default",
+                    101,
+                    101,
+                    picker.message_id,
+                    f"nd:{picker.token}:mode_menu",
+                ),
+            )
+            mode_keyboard = telegram.edit_markups[-1]["inline_keyboard"]
+            quiet_mode = next(
+                row[0]["callback_data"]
+                for row in mode_keyboard
+                if row[0]["callback_data"].endswith(":mode:quiet_answers")
+            )
+            await dispatch_user_update(
+                user,
+                callback_event(3, "save-mode-default", 101, 101, picker.message_id, quiet_mode),
+            )
+
+            self.assertEqual(
+                state_store.load_new_chat_defaults(101),
+                NewChatDefaults(output_mode="quiet_answers"),
+            )
+            self.assertEqual(state_store.for_user(101).load().output_mode, "detailed")
+
+            user.directory_picker = DirectoryPicker(
+                token="directory-token",
+                current_path=root,
+                directories=[],
+                message_id=77,
+            )
+            await dispatch_user_update(
+                user,
+                callback_event(
+                    4,
+                    "start-new-chat",
+                    101,
+                    101,
+                    77,
+                    "np:directory-token:s",
+                ),
+            )
+            self.assertEqual(
+                sessions[101].new_thread_calls[-1][2]["new_chat_defaults"],
+                NewChatDefaults(output_mode="quiet_answers"),
+            )
+            await controller.close()
+
     async def test_messages_and_approval_callbacks_are_isolated_by_user(self) -> None:
         state_directory = tempfile.TemporaryDirectory(prefix="telecodex-routing-")
         config = AppConfig(

@@ -616,10 +616,42 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Страница 1/2", telegram.messages[-1][1])
             first_pager = telegram.reply_markups[-1]["inline_keyboard"][-1]
             self.assertEqual([button["text"] for button in first_pager], ["«", "1/2", "»"])
+            self.assertEqual(first_pager[0]["callback_data"], f"m:{picker.token}:p:1")
             self.assertEqual(first_pager[2]["callback_data"], f"m:{picker.token}:p:1")
+
             await dispatch_user_update(controller,
                 callback_event(
                     2,
+                    "wrap-model-left",
+                    101,
+                    101,
+                    picker.message_id or 0,
+                    first_pager[0]["callback_data"],
+                )
+            )
+            last_pager = telegram.edit_markups[-1]["inline_keyboard"][-1]
+            self.assertEqual(picker.page, 1)
+            self.assertEqual([button["text"] for button in last_pager], ["«", "2/2", "»"])
+            self.assertEqual(last_pager[2]["callback_data"], f"m:{picker.token}:p:0")
+
+            await dispatch_user_update(controller,
+                callback_event(
+                    3,
+                    "wrap-model-right",
+                    101,
+                    101,
+                    picker.message_id or 0,
+                    last_pager[2]["callback_data"],
+                )
+            )
+            first_pager = telegram.edit_markups[-1]["inline_keyboard"][-1]
+            self.assertEqual(picker.page, 0)
+            self.assertEqual([button["text"] for button in first_pager], ["«", "1/2", "»"])
+
+            edit_count = len(telegram.edits)
+            await dispatch_user_update(controller,
+                callback_event(
+                    4,
                     "current-model-page",
                     101,
                     101,
@@ -628,11 +660,11 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             self.assertEqual(picker.page, 0)
-            self.assertEqual(telegram.edits, [])
+            self.assertEqual(len(telegram.edits), edit_count)
 
             await dispatch_user_update(controller,
                 callback_event(
-                    3,
+                    5,
                     "next-model-page",
                     101,
                     101,
@@ -646,7 +678,7 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
 
             await dispatch_user_update(controller,
                 callback_event(
-                    4,
+                    6,
                     "previous-model-page",
                     101,
                     101,
@@ -675,3 +707,10 @@ class PickerPaginationTests(unittest.TestCase):
             [button["text"] for button in navigation_row(0, 2, "<", "{current}/{total}", ">", "x")],
             ["<", "1/2", ">"],
         )
+
+    def test_navigation_row_wraps_from_first_to_last_and_last_to_first(self) -> None:
+        first_page = navigation_row(0, 3, "<", "{current}/{total}", ">", "x")
+        last_page = navigation_row(2, 3, "<", "{current}/{total}", ">", "x")
+
+        self.assertEqual(first_page[0]["callback_data"], "x:p:2")
+        self.assertEqual(last_page[2]["callback_data"], "x:p:0")

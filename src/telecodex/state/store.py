@@ -11,6 +11,8 @@ from telecodex.state.codec import (
     RECOVERY_PHASES,
     RECOVERY_RESULT_STATUSES,
     _empty_state,
+    _new_chat_defaults_from_data,
+    _new_chat_defaults_to_data,
     _new_group_record,
     _normalize_runtime_state_data,
     _pending_turn_from_data,
@@ -19,7 +21,7 @@ from telecodex.state.codec import (
     _runtime_state_to_data,
 )
 from telecodex.state.legacy_json import load_legacy_json_object
-from telecodex.state.models import PendingTurnState, RuntimeState, ThreadRuntimeState
+from telecodex.state.models import NewChatDefaults, PendingTurnState, RuntimeState, ThreadRuntimeState
 from telecodex.state.sqlite import SQLiteStateBackend
 
 
@@ -109,7 +111,12 @@ class RuntimeStateStore:
 
         return self._update_data(update)
 
-    def begin_group_setup(self, chat_id: int, title: str, user_id: int) -> str:
+    def begin_group_setup(
+        self,
+        chat_id: int,
+        title: str,
+        user_id: int,
+    ) -> str:
         """Start or resume one trusted user's trigger-word setup for a group."""
         _validate_group_chat_id(chat_id)
         if not isinstance(title, str):
@@ -140,11 +147,15 @@ class RuntimeStateStore:
         chat_id: int,
         user_id: int,
         trigger_words: tuple[str, ...],
+        *,
+        default_all_messages_to_codex: bool = False,
     ) -> str | None:
         """Save trigger words and attach the group, or update its existing list."""
         _validate_group_chat_id(chat_id)
         if type(user_id) is not int or user_id < 1:
             raise ValueError("Runtime state has an invalid group setup user_id")
+        if not isinstance(default_all_messages_to_codex, bool):
+            raise ValueError("Runtime state has an invalid default group mode")
         normalized_words = parse_trigger_words(",".join(trigger_words))
         def update(data: dict[str, Any]) -> str | None:
             group = data["groups"].get(str(chat_id))
@@ -152,10 +163,13 @@ class RuntimeStateStore:
                 return None
 
             was_attached = group["attached"]
+            was_configured = bool(group["trigger_words"])
             pending_title = group["pending_setup_title"]
             if isinstance(pending_title, str) and pending_title.strip():
                 group["title"] = pending_title.strip()[:128]
             group["attached"] = True
+            if not was_attached and not was_configured:
+                group["all_messages_to_codex"] = default_all_messages_to_codex
             group["trigger_words"] = list(normalized_words)
             group["pending_setup_user_id"] = None
             group["pending_setup_title"] = None
@@ -243,6 +257,22 @@ class RuntimeStateStore:
 
     def save_service_metadata(self, key: str, value: str) -> None:
         self._backend.save_service_metadata(key, value)
+
+    def load_new_chat_defaults(self, user_id: int) -> NewChatDefaults:
+        _validate_user_id(user_id)
+        raw = self._load_data()["operator_defaults"].get(str(user_id), {})
+        return _new_chat_defaults_from_data(raw)
+
+    def save_new_chat_defaults(self, user_id: int, defaults: NewChatDefaults) -> None:
+        _validate_user_id(user_id)
+        if not isinstance(defaults, NewChatDefaults):
+            raise ValueError("New-chat defaults have an invalid value")
+        serialized = _new_chat_defaults_to_data(defaults)
+
+        def update(data: dict[str, Any]) -> None:
+            data["operator_defaults"][str(user_id)] = serialized
+
+        self._update_data(update)
 
     def load_pending_media_groups(self) -> dict[str, list[dict[str, Any]]]:
         return self._load_data()["pending_media_groups"]
@@ -511,12 +541,30 @@ class RuntimeStateStore:
             ):
                 raise ValueError("Runtime state has an invalid pending media group")
             pending_media_groups[group_key] = updates
+        raw_operator_defaults = raw.get("operator_defaults", {})
+        if not isinstance(raw_operator_defaults, dict):
+            raise ValueError("Runtime state has an invalid operator_defaults object")
+        operator_defaults: dict[str, dict[str, Any]] = {}
+        for user_id, raw_defaults in raw_operator_defaults.items():
+            if not isinstance(user_id, str):
+                raise ValueError("Runtime state has an invalid operator defaults user ID")
+            try:
+                numeric_user_id = int(user_id)
+            except ValueError as exc:
+                raise ValueError("Runtime state has an invalid operator defaults user ID") from exc
+            _validate_user_id(numeric_user_id)
+            if str(numeric_user_id) != user_id:
+                raise ValueError("Runtime state has an invalid operator defaults user ID")
+            operator_defaults[user_id] = _new_chat_defaults_to_data(
+                _new_chat_defaults_from_data(raw_defaults)
+            )
         return {
             "last_update_id": last_update_id,
             "users": normalized_users,
             "groups": normalized_groups,
             "threads": normalized_threads,
             "pending_media_groups": pending_media_groups,
+            "operator_defaults": operator_defaults,
         }
 
 

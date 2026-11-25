@@ -98,6 +98,16 @@ class TelegramCommandHandlers:
         if user := self._user(telecodex_context_controller):
             await user._show_permissions_picker(telecodex_context.chat_id)
 
+    async def defaults(
+        self,
+        message: Message,
+        telecodex_context: TelegramMessageContext,
+        telecodex_context_controller: TelegramUserController | None = None,
+        **_data,
+    ) -> None:
+        if user := self._user(telecodex_context_controller):
+            await user._show_new_chat_defaults(telecodex_context)
+
     async def rename(
         self,
         message: Message,

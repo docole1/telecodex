@@ -57,6 +57,7 @@ from telecodex.logging_config import (
 from telecodex.shell.runner import ShellRunner
 from telecodex.shell.session import ShellOutput, ShellSession
 from telecodex.state import OUTPUT_MODE_CHOICES
+from telecodex.state import NewChatDefaults
 from telecodex.telegram.activity import (
     explored_action_summaries,
     file_change_groups,
@@ -110,6 +111,7 @@ from telecodex.telegram.user_shell import TelegramShellController
 from telecodex.telegram.user_processes import TelegramProcessesController
 from telecodex.telegram.user_files import TelegramWorkspaceFilesController
 from telecodex.telegram.user_settings import TelegramSettingsController
+from telecodex.telegram.new_chat_defaults import TelegramNewChatDefaultsController
 from telecodex.telegram.user_state import (
     GroupActivityItem,
     PendingApproval,
@@ -132,7 +134,7 @@ GROUP_ACTIVITY_INTERVAL_SECONDS = 3.1
 GROUP_ACTIVITY_MESSAGE_LIMIT = 3900
 GROUP_ACTIVITY_QUEUE_LIMIT = 300
 TELEGRAM_COMMAND_NAMES = (
-    "start", "help", "doctor", "status", "permissions", "rename", "delete",
+    "start", "help", "doctor", "status", "permissions", "defaults", "rename", "delete",
     "fork", "compact", "plan", "goal", "recap", "init", "ps", "new", "files",
     "chats", "stop", "recover", "model", "fast", "skills", "memories", "mcp", "language",
     "mode", "shell", "exit", "group_add", "group_remove", "group_mode",
@@ -140,13 +142,13 @@ TELEGRAM_COMMAND_NAMES = (
 # Keep chat tools and next-turn settings usable during a Codex turn. Deletion
 # remains gated; thread switches use confirmation and /fork waits for idle.
 BUSY_ALLOWED_COMMANDS = frozenset({
-    "start", "help", "doctor", "status", "permissions", "rename", "fork",
+    "start", "help", "doctor", "status", "permissions", "defaults", "rename", "fork",
     "compact", "ps", "new", "chats", "files", "stop", "recover", "model",
     "fast", "skills", "memories", "mcp", "language", "mode", "shell", "plan",
     "goal", "recap", "init", "exit", "group_mode",
 })
 BUSY_ALLOWED_CALLBACKS = frozenset({
-    "ap", "me", "ps", "rc", "rr", "l", "om", "sk", "mm", "m", "np",
+    "ap", "me", "ps", "rc", "rr", "l", "om", "sk", "mm", "m", "nd", "np",
     "fb", "cp", "pm", "mc", "sw",
     "gm",
 })
@@ -172,6 +174,8 @@ class TelegramUserController(McpTelegramMixin):
         audio_transcriber: LocalAudioTranscriber | None = None,
         authorize_user: Callable[[int], bool] | None = None,
         poll_health: Callable[[], dict[str, int | None]] | None = None,
+        load_new_chat_defaults: Callable[[int], NewChatDefaults] | None = None,
+        save_new_chat_defaults: Callable[[int, NewChatDefaults], None] | None = None,
     ) -> None:
         self.config = config
         self.telegram = telegram
@@ -184,6 +188,12 @@ class TelegramUserController(McpTelegramMixin):
         self._set_group_all_messages_to_codex = set_group_all_messages_to_codex
         self._authorize_user = authorize_user
         self._poll_health = poll_health
+        self._load_new_chat_defaults = load_new_chat_defaults or (
+            lambda _user_id: NewChatDefaults()
+        )
+        self._save_new_chat_defaults = save_new_chat_defaults or (
+            lambda _user_id, _defaults: None
+        )
         self.attached = True
         self.texts = texts or load_text_catalog()
         self.audio_transcriber = audio_transcriber
@@ -289,6 +299,17 @@ class TelegramUserController(McpTelegramMixin):
             selected_output_mode=self._selected_output_mode,
             group_all_messages_to_codex=self._group_all_messages_to_codex,
             set_group_all_messages_to_codex=self._set_group_all_messages_to_codex,
+        )
+        self.new_chat_defaults_ui = TelegramNewChatDefaultsController(
+            telegram=self.telegram,
+            codex=self._codex,
+            text=self._text,
+            texts=self.texts,
+            load_defaults=self._load_new_chat_defaults,
+            save_defaults=self._save_new_chat_defaults,
+            selected_button_label=self._selected_button_label,
+            edit_message=self._edit_message,
+            log_failure=self._log_failure,
         )
 
     def bind_codex(self, codex: CodexSession) -> None:
@@ -415,6 +436,57 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _show_permissions_picker(self, chat_id: int) -> None:
         await self.settings_ui._show_permissions_picker(chat_id)
+
+    async def _new_thread_defaults(
+        self,
+        incoming: TelegramMessageContext,
+    ) -> NewChatDefaults | None:
+        defaults = self._load_new_chat_defaults(incoming.user_id)
+        if defaults.selected_model is not None:
+            try:
+                models = await self._codex().list_models()
+            except Exception as exc:
+                self._log_failure(
+                    "Could not validate the saved model before starting a new chat",
+                    exc,
+                    event="telegram.new_chat_defaults.model_validation_failed",
+                    level=logging.WARNING,
+                )
+            else:
+                selected_model = next(
+                    (model for model in models if model.model == defaults.selected_model),
+                    None,
+                )
+                if selected_model is None or (
+                    defaults.selected_effort is not None
+                    and defaults.selected_effort not in selected_model.supported_reasoning_efforts
+                ):
+                    await self.telegram.send_message(
+                        incoming.chat_id,
+                        self._text("new_chat_defaults.label.model_unavailable"),
+                        reply_to_message_id=incoming.message_id,
+                    )
+                    return None
+        if defaults.output_mode is not None:
+            return defaults
+        return replace(defaults, output_mode="answers" if self.is_group else "detailed")
+
+    async def _show_new_chat_defaults(self, incoming: TelegramMessageContext) -> None:
+        if incoming.chat_type != "private" or self.is_group:
+            await self.telegram.send_message(
+                incoming.chat_id,
+                self._text("new_chat_defaults.label.private_only"),
+                reply_to_message_id=incoming.message_id,
+            )
+            return
+        await self.new_chat_defaults_ui.show(incoming.chat_id, incoming.user_id)
+
+    async def _handle_new_chat_defaults_callback(
+        self,
+        incoming: TelegramCallbackContext,
+        parts: list[str],
+    ) -> None:
+        await self.new_chat_defaults_ui.handle_callback(incoming, parts)
 
     async def _handle_fast_command(self, incoming: TelegramMessageContext, argument: str) -> None:
         await self.settings_ui._handle_fast_command(incoming, argument)
@@ -1238,7 +1310,7 @@ class TelegramUserController(McpTelegramMixin):
             )
             return None
         if self.pending_chat_recovery is not None and command not in {
-            "status", "stop", "ps", "help", "start", "recover"
+            "status", "stop", "ps", "help", "start", "recover", "defaults"
         }:
             await self.telegram.send_message(
                 incoming.chat_id,
@@ -1247,7 +1319,7 @@ class TelegramUserController(McpTelegramMixin):
             )
             return None
         if getattr(self._codex(), "recovery_blocked", False) and command not in {
-            "status", "stop", "ps", "help", "start", "doctor", "recover", "new", "chats"
+            "status", "stop", "ps", "help", "start", "doctor", "recover", "new", "chats", "defaults"
         }:
             await self.telegram.send_message(
                 incoming.chat_id,
@@ -3275,16 +3347,26 @@ class TelegramUserController(McpTelegramMixin):
             if codex.is_busy or (
                 pending_turn is not None and pending_turn.phase != "delivery_pending"
             ):
+                defaults = await self._new_thread_defaults(incoming)
+                if defaults is None:
+                    return
                 await self._request_thread_switch(
                     incoming,
                     action="new",
                     path=picker.current_path,
                     picker_message_id=picker.message_id,
                     picker_token=picker.token,
+                    new_chat_defaults=defaults,
                 )
                 return
             try:
-                await codex.new_thread(picker.current_path)
+                defaults = await self._new_thread_defaults(incoming)
+                if defaults is None:
+                    return
+                await codex.new_thread(
+                    picker.current_path,
+                    new_chat_defaults=defaults,
+                )
             except Exception as exc:
                 self._log_failure(
                     "Could not create Codex thread for selected directory",
@@ -3788,6 +3870,7 @@ class TelegramUserController(McpTelegramMixin):
         picker_message_id: int | None = None,
         picker_token: str | None = None,
         picker_index: int | None = None,
+        new_chat_defaults: NewChatDefaults | None = None,
     ) -> None:
         token = secrets.token_urlsafe(5)
         if action == "new":
@@ -3829,6 +3912,7 @@ class TelegramUserController(McpTelegramMixin):
             picker_token=picker_token,
             picker_index=picker_index,
             source_thread_id=self._codex().state.thread_id,
+            new_chat_defaults=new_chat_defaults,
         )
 
     async def _handle_thread_switch_callback(
@@ -3879,7 +3963,11 @@ class TelegramUserController(McpTelegramMixin):
             if pending.action == "new":
                 if pending.path is None:
                     raise RuntimeError("A new-thread switch is missing its target directory")
-                await codex.new_thread(pending.path, force=True)
+                await codex.new_thread(
+                    pending.path,
+                    force=True,
+                    new_chat_defaults=pending.new_chat_defaults,
+                )
             else:
                 if pending.thread_id is None:
                     raise RuntimeError("A chat switch is missing its target thread")

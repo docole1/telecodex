@@ -58,6 +58,7 @@ from telecodex.logging_config import (
 from telecodex.state import (
     OUTPUT_MODE_CHOICES,
     GroupRuntimeStateStore,
+    NewChatDefaults,
     PendingTurnState,
     ThreadRuntimeState,
     UserRuntimeStateStore,
@@ -2792,7 +2793,13 @@ class CodexSession:
             return self.state_store.load_thread(self.state.thread_id).permission_mode
         return self.state.default_permission_mode
 
-    async def new_thread(self, cwd: Path, *, force: bool = False) -> None:
+    async def new_thread(
+        self,
+        cwd: Path,
+        *,
+        force: bool = False,
+        new_chat_defaults: NewChatDefaults | None = None,
+    ) -> None:
         if not force:
             await self._wait_for_turn_completion()
         cwd = self._validated_workspace_path(cwd)
@@ -2805,6 +2812,18 @@ class CodexSession:
         self._clear_active_command_executions()
         self.settings_manager.reset_thread_settings()
         self.state.thread_id = None
+        if new_chat_defaults is not None:
+            self.state.selected_model = new_chat_defaults.selected_model
+            self.state.selected_effort = new_chat_defaults.selected_effort
+            self.state.default_permission_mode = new_chat_defaults.default_permission_mode
+            self.state.selected_memory_mode = new_chat_defaults.selected_memory_mode
+            if new_chat_defaults.output_mode is not None:
+                self.state.quiet_progress = new_chat_defaults.output_mode == "quiet_answers"
+                self.state.output_mode = (
+                    "answers"
+                    if new_chat_defaults.output_mode == "quiet_answers"
+                    else new_chat_defaults.output_mode
+                )
         self._goal = None
         self._goal_thread_id = None
         self._goal_prompt_message_id = None

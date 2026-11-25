@@ -12,7 +12,13 @@ from unittest.mock import patch
 
 from telecodex.config import state_paths_from_env
 from telecodex.state.sqlite import export_state_json
-from telecodex.state import PendingTurnState, RuntimeState, RuntimeStateStore, ThreadRuntimeState
+from telecodex.state import (
+    NewChatDefaults,
+    PendingTurnState,
+    RuntimeState,
+    RuntimeStateStore,
+    ThreadRuntimeState,
+)
 
 KAWAII_TRIGGER_CYRILLIC = "\u043a\u0430\u0432\u0430\u0438"
 
@@ -22,6 +28,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
     def _downgrade_v3_database(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("DROP TABLE service_metadata")
+        connection.execute("DROP TABLE operator_defaults")
         connection.execute("ALTER TABLE group_contexts DROP COLUMN all_messages_to_codex")
         for table in ("user_contexts", "group_contexts"):
             for column in (
@@ -97,7 +104,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
             self.assertFalse(reopened.for_user(101).load().quiet_progress)
             self.assertFalse(reopened.for_group(-100990).load().quiet_progress)
             with sqlite3.connect(database_path) as connection:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
             user = reopened.for_user(101).load()
@@ -121,6 +128,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
 
             with sqlite3.connect(database_path) as connection:
                 connection.execute("DROP TABLE service_metadata")
+                connection.execute("DROP TABLE operator_defaults")
                 connection.execute("ALTER TABLE group_contexts DROP COLUMN all_messages_to_codex")
                 connection.execute("ALTER TABLE user_contexts DROP COLUMN quiet_progress")
                 connection.execute("ALTER TABLE group_contexts DROP COLUMN quiet_progress")
@@ -134,7 +142,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
             reopened = RuntimeStateStore(database_path)
             self.assertTrue(reopened.group_all_messages_to_codex(-100991))
             with sqlite3.connect(database_path) as connection:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
 
     def test_group_message_mode_survives_detach_and_reattach(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -149,6 +157,33 @@ class SQLiteStateMigrationTests(unittest.TestCase):
             self.assertTrue(store.is_group_attached(-100992))
             self.assertTrue(store.group_all_messages_to_codex(-100992))
             self.assertEqual(store.group_trigger_words(-100992), ("assistant",))
+
+    def test_operator_new_chat_defaults_survive_restart_and_state_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database_path = root / "state.sqlite3"
+            export_path = root / "state-export.json"
+            restored_path = root / "restored.sqlite3"
+            store = RuntimeStateStore(database_path)
+            defaults = NewChatDefaults(
+                selected_model="gpt-6-luna",
+                selected_effort="high",
+                default_permission_mode="read_only",
+                selected_memory_mode="disabled",
+                output_mode="quiet_answers",
+                group_all_messages_to_codex=True,
+            )
+            store.save_new_chat_defaults(101, defaults)
+            store.for_user(101).save(RuntimeState(thread_id="current-thread"))
+
+            reopened = RuntimeStateStore(database_path)
+            self.assertEqual(reopened.load_new_chat_defaults(101), defaults)
+            self.assertEqual(reopened.load_new_chat_defaults(202), NewChatDefaults())
+
+            export_state_json(database_path, export_path)
+            imported = RuntimeStateStore(restored_path, migration_path=export_path)
+            self.assertEqual(imported.load_new_chat_defaults(101), defaults)
+            self.assertEqual(imported.for_user(101).load().thread_id, "current-thread")
 
     def test_imports_complete_multicontext_json_without_modifying_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

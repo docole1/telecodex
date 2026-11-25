@@ -446,6 +446,7 @@ class FakeCodex:
         self.thread_effort: str | None = None
         self.working_directory = Path("/tmp")
         self.threads: list[CodexThread] = []
+        self.new_thread_calls: list[tuple[Path | None, bool, dict[str, Any]]] = []
         self.select_calls: list[tuple[str, Path]] = []
         self.select_error: Exception | None = None
         self.fork_by_id_calls: list[tuple[str, Path]] = []
@@ -519,7 +520,14 @@ class FakeCodex:
     async def status_text(self, *, include_account: bool = True) -> str:
         return "Codex: ready"
 
-    async def new_thread(self, _cwd: Path | None = None, *, force: bool = False) -> None:
+    async def new_thread(
+        self,
+        cwd: Path | None = None,
+        *,
+        force: bool = False,
+        **_kwargs: Any,
+    ) -> None:
+        self.new_thread_calls.append((cwd, force, dict(_kwargs)))
         return None
 
     async def rename_thread(self, name: str) -> None:

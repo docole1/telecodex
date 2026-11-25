@@ -47,3 +47,15 @@ class ThreadRuntimeState:
     memory_mode: str | None = None
     managed_by_telecodex: bool = False
     token_usage: dict[str, int | None] | None = None
+
+
+@dataclass(frozen=True)
+class NewChatDefaults:
+    """Per-operator settings to seed into conversations created with /new."""
+
+    selected_model: str | None = None
+    selected_effort: str | None = None
+    default_permission_mode: str | None = None
+    selected_memory_mode: str | None = None
+    output_mode: str | None = None
+    group_all_messages_to_codex: bool | None = None

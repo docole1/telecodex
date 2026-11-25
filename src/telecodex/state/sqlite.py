@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _APPLICATION_ID = 0x54434F44  # "TCOD"
 
 _SCHEMA = """
@@ -20,6 +20,16 @@ CREATE TABLE service_state (
 CREATE TABLE service_metadata (
     metadata_key TEXT PRIMARY KEY CHECK (length(metadata_key) > 0),
     metadata_value TEXT NOT NULL CHECK (length(metadata_value) > 0)
+);
+
+CREATE TABLE operator_defaults (
+    user_id INTEGER PRIMARY KEY CHECK (user_id > 0),
+    selected_model TEXT CHECK (selected_model IS NULL OR length(selected_model) > 0),
+    selected_effort TEXT CHECK (selected_effort IS NULL OR length(selected_effort) > 0),
+    default_permission_mode TEXT CHECK (default_permission_mode IS NULL OR default_permission_mode IN ('ask', 'auto_review', 'full_access', 'read_only')),
+    selected_memory_mode TEXT CHECK (selected_memory_mode IS NULL OR selected_memory_mode IN ('enabled', 'disabled')),
+    output_mode TEXT CHECK (output_mode IS NULL OR output_mode IN ('answers', 'quiet_answers', 'detailed')),
+    group_all_messages_to_codex INTEGER CHECK (group_all_messages_to_codex IS NULL OR group_all_messages_to_codex IN (0, 1))
 );
 
 CREATE TABLE threads (
@@ -220,6 +230,9 @@ class SQLiteStateBackend:
                 version = 6
             if version == 6:
                 self._migrate_v6_to_v7(connection)
+                version = 7
+            if version == 7:
+                self._migrate_v7_to_v8(connection)
         except Exception:
             connection.rollback()
             raise
@@ -274,6 +287,26 @@ class SQLiteStateBackend:
             "metadata_value TEXT NOT NULL CHECK (length(metadata_value) > 0))"
         )
         connection.execute("PRAGMA user_version = 7")
+        connection.commit()
+
+    def _migrate_v7_to_v8(self, connection: sqlite3.Connection) -> None:
+        self._create_pre_migration_backup(7)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "CREATE TABLE operator_defaults ("
+            "user_id INTEGER PRIMARY KEY CHECK (user_id > 0), "
+            "selected_model TEXT CHECK (selected_model IS NULL OR length(selected_model) > 0), "
+            "selected_effort TEXT CHECK (selected_effort IS NULL OR length(selected_effort) > 0), "
+            "default_permission_mode TEXT CHECK (default_permission_mode IS NULL OR "
+            "default_permission_mode IN ('ask', 'auto_review', 'full_access', 'read_only')), "
+            "selected_memory_mode TEXT CHECK (selected_memory_mode IS NULL OR "
+            "selected_memory_mode IN ('enabled', 'disabled')), "
+            "output_mode TEXT CHECK (output_mode IS NULL OR "
+            "output_mode IN ('answers', 'quiet_answers', 'detailed')), "
+            "group_all_messages_to_codex INTEGER CHECK (group_all_messages_to_codex IS NULL OR "
+            "group_all_messages_to_codex IN (0, 1)))"
+        )
+        connection.execute("PRAGMA user_version = 8")
         connection.commit()
 
     def _create_pre_migration_backup(self, schema_version: int) -> None:
@@ -376,6 +409,7 @@ class SQLiteStateBackend:
             required = {
                 "service_state",
                 "service_metadata",
+                "operator_defaults",
                 "threads",
                 "thread_token_usage",
                 "user_contexts",
@@ -458,6 +492,7 @@ def _empty_state() -> dict[str, Any]:
         "groups": {},
         "threads": {},
         "pending_media_groups": {},
+        "operator_defaults": {},
     }
 
 
@@ -594,12 +629,39 @@ def _read_state(connection: sqlite3.Connection) -> dict[str, Any]:
     ):
         pending_media_groups.setdefault(group_key, []).append(json.loads(update_json))
 
+    operator_defaults = {
+        str(user_id): {
+            "selected_model": selected_model,
+            "selected_effort": selected_effort,
+            "default_permission_mode": permission_mode,
+            "selected_memory_mode": memory_mode,
+            "output_mode": output_mode,
+            "group_all_messages_to_codex": (
+                None if group_mode is None else bool(group_mode)
+            ),
+        }
+        for (
+            user_id,
+            selected_model,
+            selected_effort,
+            permission_mode,
+            memory_mode,
+            output_mode,
+            group_mode,
+        ) in connection.execute(
+            "SELECT user_id, selected_model, selected_effort, default_permission_mode, "
+            "selected_memory_mode, output_mode, group_all_messages_to_codex "
+            "FROM operator_defaults ORDER BY user_id"
+        )
+    }
+
     return {
         "last_update_id": service_row[0],
         "users": users,
         "groups": groups,
         "threads": threads,
         "pending_media_groups": pending_media_groups,
+        "operator_defaults": operator_defaults,
     }
 
 
@@ -688,7 +750,28 @@ def _replace_state(connection: sqlite3.Connection, state: dict[str, Any]) -> Non
     connection.execute("DELETE FROM group_contexts")
     connection.execute("DELETE FROM threads")
     connection.execute("DELETE FROM service_state")
+    connection.execute("DELETE FROM operator_defaults")
     connection.execute("INSERT INTO service_state(singleton, last_update_id) VALUES (1, ?)", (state["last_update_id"],))
+
+    for user_id_text, defaults in state.get("operator_defaults", {}).items():
+        connection.execute(
+            "INSERT INTO operator_defaults(user_id, selected_model, selected_effort, "
+            "default_permission_mode, selected_memory_mode, output_mode, "
+            "group_all_messages_to_codex) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                int(user_id_text),
+                defaults["selected_model"],
+                defaults["selected_effort"],
+                defaults["default_permission_mode"],
+                defaults["selected_memory_mode"],
+                defaults["output_mode"],
+                (
+                    None
+                    if defaults["group_all_messages_to_codex"] is None
+                    else int(defaults["group_all_messages_to_codex"])
+                ),
+            ),
+        )
 
     for thread_id, thread in threads.items():
         connection.execute(

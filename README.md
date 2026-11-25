@@ -104,6 +104,7 @@ Send tasks as ordinary messages. Use `/help` or `/start` in Telegram to show the
 | Command | Description |
 | --- | --- |
 | `/model` | Choose a model and its reasoning effort. |
+| `/defaults` | Set model, permissions, reply mode, and memory defaults for new chats, plus the default message mode for new groups. |
 | `/fast` | Toggle the Fast tier when the selected model supports it. |
 | `/mode` | Choose answers-only, answers with silent progress updates, or detailed activity. |
 | `/plan [task]` | Switch Plan/Default mode, or start planning a task in Plan mode. |

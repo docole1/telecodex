@@ -138,7 +138,7 @@ class FakeCodex:
     async def list_workspace_directories(self, _parent: Path) -> list[Path]:
         return []
 
-    async def new_thread(self, cwd: Path, *, force: bool = False) -> None:
+    async def new_thread(self, cwd: Path, *, force: bool = False, **_kwargs: Any) -> None:
         self.new_thread_calls.append((cwd, force))
         self.state.thread_id = None
         self.state.cwd = str(cwd)

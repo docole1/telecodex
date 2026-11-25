@@ -40,10 +40,14 @@ def navigation_row(
     next_text: str,
     callback_prefix: str,
 ) -> list[dict[str, str]]:
+    if count < 1:
+        raise ValueError("Page count must be greater than zero")
+    previous_page = (page - 1) % count
+    next_page = (page + 1) % count
     return [
-        {"text": previous_text, "callback_data": f"{callback_prefix}:p:{page - 1}"},
+        {"text": previous_text, "callback_data": f"{callback_prefix}:p:{previous_page}"},
         {"text": page_text.format(current=page + 1, total=count), "callback_data": f"{callback_prefix}:i"},
-        {"text": next_text, "callback_data": f"{callback_prefix}:p:{page + 1}"},
+        {"text": next_text, "callback_data": f"{callback_prefix}:p:{next_page}"},
     ]
 
 

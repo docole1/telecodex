@@ -229,16 +229,20 @@ class TelegramSettingsController:
         rows = two_column_rows(buttons, 0)
         total_pages = page_count(len(picker.skills))
         if total_pages > 1:
-            nav: list[dict[str, str]] = []
-            if picker.page > 0:
-                nav.append({"text": "‹", "callback_data": f"sk:{picker.token}:p:{picker.page - 1}"})
-            nav.append({
-                "text": self._text("skills.buttons.page", current=picker.page + 1, total=total_pages),
-                "callback_data": f"sk:{picker.token}:n",
-            })
-            if picker.page + 1 < total_pages:
-                nav.append({"text": "›", "callback_data": f"sk:{picker.token}:p:{picker.page + 1}"})
-            rows.append(nav)
+            rows.append(
+                navigation_row(
+                    picker.page,
+                    total_pages,
+                    "‹",
+                    self._text(
+                        "skills.buttons.page",
+                        current="{current}",
+                        total="{total}",
+                    ),
+                    "›",
+                    f"sk:{picker.token}",
+                )
+            )
         rows.append([{"text": self._text("common.buttons.back"), "callback_data": f"sk:{picker.token}:b"}])
         return {"inline_keyboard": rows}
 
@@ -705,7 +709,7 @@ class TelegramSettingsController:
                 self._skills_picker_keyboard(picker),
             )
             return
-        if action == "n" and len(parts) == 3:
+        if action in {"n", "i"} and len(parts) == 3:
             await self.telegram.answer_callback_query(incoming.callback_id)
             return
         if action == "p" and len(parts) == 4:

@@ -171,8 +171,12 @@ class TelegramController:
                 reply_to_message_id=incoming.message_id,
             )
             return True
+        defaults = self.state_store.load_new_chat_defaults(incoming.user_id)
         result = self.state_store.complete_group_setup(
-            incoming.chat_id, incoming.user_id, trigger_words
+            incoming.chat_id,
+            incoming.user_id,
+            trigger_words,
+            default_all_messages_to_codex=bool(defaults.group_all_messages_to_codex),
         )
         if result is None:
             return False
@@ -350,6 +354,8 @@ class TelegramController:
                 self.config, self.telegram, self.shell, user_id, self.texts,
                 audio_transcriber=self.audio_transcriber,
                 poll_health=self.poll_health,
+                load_new_chat_defaults=self.state_store.load_new_chat_defaults,
+                save_new_chat_defaults=self.state_store.save_new_chat_defaults,
             )
             controller.bind_codex(self.session_factory(user_id, controller))
             controller.bind_mcp_reloader(self.reload_mcp_config)
@@ -374,6 +380,8 @@ class TelegramController:
                 audio_transcriber=self.audio_transcriber,
                 authorize_user=lambda user_id: self.can_user_access_context(chat_id, user_id),
                 poll_health=self.poll_health,
+                load_new_chat_defaults=self.state_store.load_new_chat_defaults,
+                save_new_chat_defaults=self.state_store.save_new_chat_defaults,
             )
             controller.bind_codex(self.session_factory(chat_id, controller))
             controller.bind_mcp_reloader(self.reload_mcp_config)
