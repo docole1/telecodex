@@ -703,7 +703,7 @@
   "new_chat_defaults": {
     "label": {
       "private_only": "Set new-chat defaults in a private chat with the bot.",
-      "menu": "<strong>New-chat defaults</strong>\n\nModel: {model}\nPermissions: {permissions}\nReply mode: {mode}\nMemories: {memory}\nNew groups: {group_mode}\n\nThe profile is applied by /new. /mode separately changes the current Telegram chat. The group mode is applied the first time you use /group_add.",
+      "menu": "<strong>New-chat defaults</strong>\n\nModel: {model}\nPermissions: {permissions}\nReply mode: {mode}\nMemories: {memory}\nNew groups: {group_mode}",
       "load_failed": "Could not load new-chat defaults.",
       "models_failed": "Could not load the Codex model list.",
       "models_empty": "Codex returned no available models.",
