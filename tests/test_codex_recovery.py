@@ -13,6 +13,8 @@ from telecodex.telegram.controller import TelegramController
 from telecodex.telegram.user_controller import TelegramUserController
 
 from multi_user_test_support import (
+    dispatch_controller_update,
+    dispatch_user_update,
     callback_event,
     message_event,
     FakeAppServer,
@@ -55,7 +57,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             await controller.start()
             self.assertTrue(codex.closed)
-            await controller._handle_update({
+            await dispatch_controller_update(controller, {
                 "update_id": 1,
                 "message": {
                     "message_id": 1,
@@ -105,7 +107,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram, codex = self._controller(workspace)
             codex.state.thread_id = "thread-locked"
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 1, 101, 101, "private", "/chats")
             )
 
@@ -128,13 +130,13 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
         controller: TelegramUserController,
         telegram: FakeTelegram,
     ) -> None:
-        await controller._handle_message(message_event(1, 1, 101, 101, "private", "/chats"))
+        await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/chats"))
         detail_data = telegram.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
-        await controller._handle_callback(
+        await dispatch_user_update(controller,
             callback_event(2, "open-chat-details", 101, 101, 1, detail_data)
         )
         select_data = telegram.edit_markups[-1]["inline_keyboard"][0][0]["callback_data"]
-        await controller._handle_callback(
+        await dispatch_user_update(controller,
             callback_event(3, "select-chat", 101, 101, 1, select_data)
         )
 
@@ -154,7 +156,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controller.chats_picker.blocked_thread_index, 0)  # type: ignore[union-attr]
 
             codex.select_error = None
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "retry-chat", 101, 101, 1, retry_data)
             )
 
@@ -173,7 +175,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await self._open_picker_and_trigger_conflict(controller, telegram)
 
             fork_data = self._button(telegram.edit_markups[-1], "f")
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "fork-chat", 101, 101, 1, fork_data)
             )
 

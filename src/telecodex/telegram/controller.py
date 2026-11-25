@@ -7,7 +7,6 @@ import logging
 from typing import Any, Callable
 
 from aiogram import Bot
-from aiogram.types import CallbackQuery, Message
 
 from telecodex.audio.transcriber import LocalAudioTranscriber
 from telecodex.codex.session import ActiveThreadWriterError, CodexSession
@@ -17,7 +16,12 @@ from telecodex.i18n import TextCatalog, load_text_catalog
 from telecodex.logging_config import bind_log_context, log_exception, log_identifier
 from telecodex.shell.runner import ShellRunner
 from telecodex.state import RuntimeStateStore
-from telecodex.telegram.updates import parse_command, parse_update
+from telecodex.telegram.updates import (
+    TelegramCallbackContext,
+    TelegramMessageContext,
+    parse_command,
+    parse_update,
+)
 from telecodex.telegram.user_controller import TelegramUserController
 
 logger = logging.getLogger(__name__)
@@ -128,38 +132,14 @@ class TelegramController:
                 )
         return succeeded, failed
 
-    async def _handle_update(self, update: dict[str, Any]) -> None:
-        incoming = parse_update(update)
-        if incoming is None:
-            return
-        await self._handle_incoming(incoming)
-
-    async def _handle_incoming(
-        self,
-        incoming: Message | CallbackQuery,
-        *,
-        message_route: str | None = None,
-        callback_route: str | None = None,
-    ) -> None:
-        prepared = await self._prepare_incoming(incoming)
-        if prepared is None:
-            return
-        controller, routed = prepared
-        if isinstance(routed, CallbackQuery):
-            await controller._handle_callback(routed, callback_route=callback_route)
-        else:
-            await controller._handle_message(routed, message_route=message_route)
-
     async def _prepare_incoming(
         self,
-        incoming: Message | CallbackQuery,
-    ) -> tuple[TelegramUserController, Message | CallbackQuery] | None:
-        if isinstance(incoming, Message) and await self._handle_group_command(incoming):
-            return None
-        if isinstance(incoming, Message) and await self._handle_group_setup_response(incoming):
+        incoming: TelegramMessageContext | TelegramCallbackContext,
+    ) -> tuple[TelegramUserController, TelegramMessageContext | TelegramCallbackContext] | None:
+        if isinstance(incoming, TelegramMessageContext) and await self._handle_group_setup_response(incoming):
             return None
         if not self.can_user_access_context(incoming.chat_id, incoming.user_id):
-            if isinstance(incoming, CallbackQuery):
+            if isinstance(incoming, TelegramCallbackContext):
                 await self.telegram.answer_callback_query(incoming.callback_id)
             return None
         controller = self._controller_for_update(incoming)
@@ -170,7 +150,7 @@ class TelegramController:
             return None
         return controller, prepared
 
-    async def _handle_group_setup_response(self, incoming: Message) -> bool:
+    async def _handle_group_setup_response(self, incoming: TelegramMessageContext) -> bool:
         if (
             incoming.chat_type not in {"group", "supergroup"}
             or incoming.user_id not in self.config.telegram_allowed_user_ids
@@ -207,64 +187,38 @@ class TelegramController:
             controller.attached = True
         return True
 
-    async def _handle_group_command(self, incoming: Message) -> bool:
-        parsed = None if incoming.attachments else parse_command(incoming.text)
-        supported = {"group_add", "group_remove", "group_mode"}
-        if parsed is None or parsed[0] not in supported:
-            return False
-        command = parsed[0]
-        is_group = incoming.chat_type in {"group", "supergroup"} and incoming.chat_id < 0
-        if not is_group:
-            if incoming.user_id not in self.config.telegram_allowed_user_ids:
-                return True
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self.texts.render("ru", "groups.label.only_group"),
-                reply_to_message_id=incoming.message_id,
-            )
-            return True
-        if incoming.user_id not in self.config.telegram_allowed_user_ids:
-            return True
+    async def handle_group_add_command(self, incoming: TelegramMessageContext) -> None:
+        if not await self._group_command_requirements(incoming):
+            return
+        setup_status = self.state_store.begin_group_setup(
+            incoming.chat_id,
+            incoming.chat_title or str(incoming.chat_id),
+            incoming.user_id,
+        )
+        key = "groups.label.setup_pending_other" if setup_status == "pending_other" else "groups.label.setup_prompt"
+        await self.telegram.send_message(
+            incoming.chat_id,
+            self.texts.render("ru", key),
+            reply_to_message_id=incoming.message_id,
+        )
+        controller = self.groups.get(incoming.chat_id)
+        if controller is not None:
+            controller.attached = self.state_store.is_group_attached(incoming.chat_id)
 
-        if command == "group_add":
-            setup_status = self.state_store.begin_group_setup(
-                incoming.chat_id, incoming.chat_title or str(incoming.chat_id), incoming.user_id
-            )
-            key = "groups.label.setup_pending_other" if setup_status == "pending_other" else "groups.label.setup_prompt"
+    async def handle_group_remove_command(self, incoming: TelegramMessageContext) -> None:
+        if not await self._group_command_requirements(incoming):
+            return
+        if not self.state_store.detach_group(incoming.chat_id):
+            if self.state_store.cancel_group_setup(incoming.chat_id):
+                key = "groups.label.setup_cancelled"
+            else:
+                key = "groups.label.not_attached"
             await self.telegram.send_message(
                 incoming.chat_id,
                 self.texts.render("ru", key),
                 reply_to_message_id=incoming.message_id,
             )
-            controller = self.groups.get(incoming.chat_id)
-            if controller is not None:
-                controller.attached = self.state_store.is_group_attached(incoming.chat_id)
-            return True
-
-        if command == "group_mode":
-            if not self.state_store.is_group_attached(incoming.chat_id):
-                await self.telegram.send_message(
-                    incoming.chat_id,
-                    self.texts.render("ru", "groups.label.not_attached"),
-                    reply_to_message_id=incoming.message_id,
-                )
-                return True
-            return False
-
-        if not self.state_store.detach_group(incoming.chat_id):
-            if self.state_store.cancel_group_setup(incoming.chat_id):
-                await self.telegram.send_message(
-                    incoming.chat_id,
-                    self.texts.render("ru", "groups.label.setup_cancelled"),
-                    reply_to_message_id=incoming.message_id,
-                )
-                return True
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self.texts.render("ru", "groups.label.not_attached"),
-                reply_to_message_id=incoming.message_id,
-            )
-            return True
+            return
         await self.telegram.send_message(
             incoming.chat_id,
             self.texts.render("ru", "groups.label.detached"),
@@ -273,7 +227,33 @@ class TelegramController:
         controller = self.groups.get(incoming.chat_id)
         if controller is not None:
             await self._close_group_controller(controller, interrupt=True)
-        return True
+
+    async def handle_group_mode_command(self, incoming: TelegramMessageContext) -> None:
+        if not await self._group_command_requirements(incoming):
+            return
+        if not self.state_store.is_group_attached(incoming.chat_id):
+            await self.telegram.send_message(
+                incoming.chat_id,
+                self.texts.render("ru", "groups.label.not_attached"),
+                reply_to_message_id=incoming.message_id,
+            )
+            return
+        controller = self._get_group_controller(incoming.chat_id)
+        prepared = await controller._prepare_incoming(incoming)
+        if isinstance(prepared, TelegramMessageContext):
+            await controller._show_group_mode_picker(prepared)
+
+    async def _group_command_requirements(self, incoming: TelegramMessageContext) -> bool:
+        if incoming.user_id not in self.config.telegram_allowed_user_ids:
+            return False
+        if incoming.chat_type in {"group", "supergroup"} and incoming.chat_id < 0:
+            return True
+        await self.telegram.send_message(
+            incoming.chat_id,
+            self.texts.render("ru", "groups.label.only_group"),
+            reply_to_message_id=incoming.message_id,
+        )
+        return False
 
     async def _close_group_controller(
         self,
@@ -323,9 +303,9 @@ class TelegramController:
             )
 
     def _controller_for_update(
-        self, incoming: Message | CallbackQuery
+        self, incoming: TelegramMessageContext | TelegramCallbackContext
     ) -> TelegramUserController | None:
-        if isinstance(incoming, Message):
+        if isinstance(incoming, TelegramMessageContext):
             if incoming.chat_type == "private" and incoming.chat_id == incoming.user_id:
                 return self._get_user_controller(incoming.user_id)
             if (
@@ -345,7 +325,7 @@ class TelegramController:
         if not updates:
             return
         incoming = parse_update(updates[0])
-        if not isinstance(incoming, Message):
+        if not isinstance(incoming, TelegramMessageContext):
             return
         if not self.can_user_access_context(incoming.chat_id, incoming.user_id):
             return

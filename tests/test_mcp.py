@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from multi_user_test_support import FakeSentMessage, callback_event, message_event
+from multi_user_test_support import dispatch_user_update, FakeSentMessage, callback_event, message_event
 
 from telecodex.codex.app_server import build_app_server_environment
 from telecodex.codex.mcp import (
@@ -560,13 +560,13 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             controller, telegram, codex = self._controller(workspace)
-            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/mcp add"))
+            await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/mcp add"))
             picker = controller.mcp_picker
             self.assertIsNotNone(picker)
             assert picker is not None
             self.assertEqual(controller.mcp_add_wizard.stage, "transport")  # type: ignore[union-attr]
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "transport", 101, 101, picker.message_id or 1, f"mc:{picker.token}:stdio")
             )
             wizard = controller.mcp_add_wizard
@@ -578,13 +578,13 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
                 ("-", "env_vars"),
                 ("-", "confirm"),
             ):
-                await controller._handle_message(
+                await dispatch_user_update(controller,
                     message_event(3, 3, 101, 101, "private", value)
                 )
                 self.assertEqual(wizard.stage, expected_stage)
                 self.assertEqual(codex.added, [])
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(4, "confirm", 101, 101, picker.message_id or 1, f"mc:{picker.token}:add_confirm")
             )
 
@@ -597,7 +597,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             controller.is_group = True
             controller.chat_id = -100123
             controller.user_id = -100123
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 1, 101, -100123, "group", "/mcp add")
             )
 
@@ -607,7 +607,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram, _ = self._controller(Path(temp_dir))
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 1, 101, 101, "private", "/mcp login fixture")
             )
 
@@ -622,7 +622,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram, codex = self._controller(Path(temp_dir))
             codex.remote_oauth_callback = False
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 1, 101, 101, "private", "/mcp login fixture")
             )
 
@@ -636,7 +636,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_http_wizard_collects_oauth_configuration_without_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram, codex = self._controller(Path(temp_dir))
-            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/mcp add"))
+            await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/mcp add"))
             picker = controller.mcp_picker
             assert picker is not None and picker.message_id is not None
             transport_rows = telegram.markups[-1]["inline_keyboard"]
@@ -645,19 +645,19 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
                 ["Локальный процесс (STDIO)", "Streamable HTTP"],
             )
             self.assertEqual([len(row) for row in transport_rows[:2]], [1, 1])
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "http", 101, 101, picker.message_id, f"mc:{picker.token}:http")
             )
             wizard = controller.mcp_add_wizard
             assert wizard is not None
-            await controller._handle_message(message_event(3, 2, 101, 101, "private", "docs"))
-            await controller._handle_message(message_event(4, 3, 101, 101, "private", "https://example.test/mcp"))
-            await controller._handle_callback(
+            await dispatch_user_update(controller, message_event(3, 2, 101, 101, "private", "docs"))
+            await dispatch_user_update(controller, message_event(4, 3, 101, 101, "private", "https://example.test/mcp"))
+            await dispatch_user_update(controller,
                 callback_event(5, "oauth", 101, 101, picker.message_id, f"mc:{picker.token}:auth:oauth")
             )
             self.assertEqual(wizard.stage, "confirm")
             self.assertNotIn("token=", controller._mcp_add_summary(wizard))
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(6, "confirm", 101, 101, picker.message_id, f"mc:{picker.token}:add_confirm")
             )
 
@@ -670,18 +670,18 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram, codex = self._controller(Path(temp_dir))
             codex.servers = [McpServer("docs", "connected", "unknown", (), False)]
-            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/mcp"))
+            await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/mcp"))
             picker = controller.mcp_picker
             assert picker is not None and picker.message_id is not None
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "server", 101, 101, picker.message_id, f"mc:{picker.token}:server:0")
             )
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "disable", 101, 101, picker.message_id, f"mc:{picker.token}:disable")
             )
             self.assertEqual(codex.enabled_calls, [])
             self.assertIn("Отключить MCP-сервер docs", _plain_html(telegram.edits[-1][2]))
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(4, "confirm", 101, 101, picker.message_id, f"mc:{picker.token}:action_confirm")
             )
 
@@ -701,9 +701,9 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
                 },
             }))
             await asyncio.sleep(0)
-            await controller._handle_message(message_event(1, 2, 101, 101, "private", "{}"))
+            await dispatch_user_update(controller, message_event(1, 2, 101, 101, "private", "{}"))
             self.assertFalse(task.done())
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 3, 101, 101, "private", '{"project":"demo"}')
             )
             response = await task

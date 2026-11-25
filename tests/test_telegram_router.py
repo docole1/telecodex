@@ -7,7 +7,11 @@ from aiogram.types import CallbackQuery, Message, Update
 
 from telecodex.telegram.routers import TelegramUpdateRouters
 from telecodex.telegram.polling import TelegramUpdateMiddleware
-from telecodex.telegram.updates import command_argument_markdown, parse_aiogram_update
+from telecodex.telegram.updates import (
+    TelegramCallbackContext,
+    TelegramMessageContext,
+    parse_aiogram_update,
+)
 
 
 BOT_TOKEN = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
@@ -46,34 +50,43 @@ class FakeStateStore:
 class FakeController:
     def __init__(self) -> None:
         self.state_store = FakeStateStore()
-        self.incoming: list[tuple[Message | CallbackQuery, dict[str, str | None]]] = []
+        self.incoming: list[tuple[TelegramMessageContext | TelegramCallbackContext, dict[str, str | None]]] = []
 
     def can_user_access_context(self, _chat_id: int, _user_id: int) -> bool:
         return True
 
     async def _prepare_incoming(
         self,
-        incoming: Message | CallbackQuery,
-    ) -> tuple[FakeController, Message | CallbackQuery]:
+        incoming: TelegramMessageContext | TelegramCallbackContext,
+    ) -> tuple[FakeController, TelegramMessageContext | TelegramCallbackContext]:
         return self, incoming
 
-    async def _handle_message(
+    async def _handle_plain_message(
         self,
-        incoming: Message,
-        *,
-        message_route: str | None,
-        _preflighted: bool,
+        incoming: TelegramMessageContext,
     ) -> None:
-        routes = {"message_route": message_route}
-        self.incoming.append((incoming, routes))
+        self.incoming.append((incoming, {"route": "ordinary"}))
 
-    async def _handle_callback(
+    async def _handle_plan_command(
         self,
-        incoming: CallbackQuery,
-        *,
-        callback_route: str | None,
+        incoming: TelegramMessageContext,
+        argument: str,
+        model_argument: str,
     ) -> None:
-        self.incoming.append((incoming, {"callback_route": callback_route}))
+        self.incoming.append((incoming, {"route": "plan", "argument": argument, "model_argument": model_argument}))
+
+    async def _handle_help_command(self, incoming: TelegramMessageContext) -> None:
+        self.incoming.append((incoming, {"route": "help"}))
+
+    async def _handle_unknown_command(self, incoming: TelegramMessageContext, command: str) -> None:
+        self.incoming.append((incoming, {"route": "unknown", "command": command}))
+
+    async def _handle_model_callback(
+        self,
+        incoming: TelegramCallbackContext,
+        parts: list[str],
+    ) -> None:
+        self.incoming.append((incoming, {"route": "model_callback", "parts": parts}))
 
 
 def _message_update(
@@ -129,10 +142,12 @@ class TelegramUpdateRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(self.controller.incoming), 1)
         routed, routes = self.controller.incoming[0]
-        self.assertIsInstance(routed, Message)
+        self.assertIsInstance(routed.event, Message)
+        self.assertIs(routed.event, update.message)
+        self.assertEqual(routed.event.__pydantic_extra__, {})
         self.assertEqual(routed.text, "Run this task")  # type: ignore[union-attr]
         self.assertEqual(routed.prompt_text, "Run **this** task")  # type: ignore[union-attr]
-        self.assertEqual(routes, {"message_route": None})
+        self.assertEqual(routes, {"route": "ordinary"})
 
     async def test_command_router_keeps_plan_argument_entities(self) -> None:
         update = Update.model_validate(
@@ -152,9 +167,11 @@ class TelegramUpdateRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(self.controller.incoming), 1)
         routed, routes = self.controller.incoming[0]
-        self.assertIsInstance(routed, Message)
-        self.assertEqual(command_argument_markdown(routed), "**Write** a plan")  # type: ignore[arg-type]
-        self.assertEqual(routes, {"message_route": "plan"})
+        self.assertIsInstance(routed.event, Message)
+        self.assertEqual(routed.event.__pydantic_extra__, {})
+        self.assertEqual(routes["route"], "plan")
+        self.assertEqual(routes["argument"], "Write a plan")
+        self.assertEqual(routes["model_argument"], "**Write** a plan")
 
     async def test_media_group_is_persisted_through_router_before_offset_returns(self) -> None:
         update = Update.model_validate(
@@ -217,7 +234,7 @@ class TelegramUpdateRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order, ["album_saved", "offset_saved"])
         self.assertEqual(state_store.offset, 2)
 
-    async def test_callback_query_is_adapted_to_existing_callback_dto(self) -> None:
+    async def test_callback_query_is_routed_with_separate_handler_context(self) -> None:
         update = Update.model_validate(
             {
                 "update_id": 1,
@@ -248,5 +265,38 @@ class TelegramUpdateRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.controller.incoming), 1)
         routed, routes = self.controller.incoming[0]
         self.assertEqual(routed, incoming)
-        self.assertIsInstance(routed, CallbackQuery)
-        self.assertEqual(routes, {"callback_route": "m"})
+        self.assertIsInstance(routed.event, CallbackQuery)
+        self.assertIs(routed.event, update.callback_query)
+        self.assertEqual(routed.event.__pydantic_extra__, {})
+        self.assertEqual(routes, {"route": "model_callback", "parts": ["m", "token", "d"]})
+
+    async def test_unknown_command_uses_router_fallback_without_reentering_dispatcher(self) -> None:
+        update = Update.model_validate(_message_update(text="/not_a_command"))
+        await self.routes.dispatcher.feed_update(
+            self.bot,
+            update,
+            telecodex_update=update,
+        )
+
+        self.assertEqual(len(self.controller.incoming), 1)
+        _context, route = self.controller.incoming[0]
+        self.assertEqual(route, {"route": "unknown", "command": "not_a_command"})
+
+    async def test_unsupported_message_shape_stops_before_handlers(self) -> None:
+        update = Update.model_validate(
+            {
+                "update_id": 2,
+                "message": {
+                    "message_id": 3,
+                    "date": 1_700_000_000,
+                    "chat": {"id": 101, "type": "private"},
+                    "new_chat_title": "service event",
+                },
+            }
+        )
+        await self.routes.dispatcher.feed_update(
+            self.bot,
+            update,
+            telecodex_update=update,
+        )
+        self.assertEqual(self.controller.incoming, [])

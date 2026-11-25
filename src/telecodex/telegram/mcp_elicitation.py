@@ -10,9 +10,9 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from aiogram import Bot
-from aiogram.types import CallbackQuery, Message
 
 from telecodex.telegram.pagination import keyboard
+from telecodex.telegram.updates import TelegramCallbackContext, TelegramMessageContext
 
 
 @dataclass
@@ -198,7 +198,7 @@ class McpElicitationController:
 
     async def _handle_mcp_form_input(
         self,
-        incoming: Message,
+        incoming: TelegramMessageContext,
         pending: PendingMcpElicitation,
     ) -> None:
         if incoming.attachments:
@@ -292,7 +292,7 @@ class McpElicitationController:
 
     async def _handle_mcp_elicitation_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         if len(parts) != 3:

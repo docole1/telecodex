@@ -7,7 +7,6 @@ import secrets
 from typing import Any, Callable
 
 from aiogram import Bot
-from aiogram.types import CallbackQuery, Message
 
 from telecodex.codex.permissions import PERMISSION_MODES
 from telecodex.codex.types import CodexModel, FastTierUnavailableError, MemoryFeatureUnavailableError
@@ -31,6 +30,7 @@ from telecodex.telegram.pickers import (
     PermissionsPicker,
     SkillPicker,
 )
+from telecodex.telegram.updates import TelegramCallbackContext, TelegramMessageContext
 class TelegramSettingsController:
     """Own the model, permission, language, mode, skill, and memory pickers."""
 
@@ -372,7 +372,7 @@ class TelegramSettingsController:
             self.permissions_picker = picker
 
 
-    async def _handle_fast_command(self, incoming: Message, argument: str) -> None:
+    async def _handle_fast_command(self, incoming: TelegramMessageContext, argument: str) -> None:
         requested = argument.strip().casefold()
         if requested:
             await self.telegram.send_message(incoming.chat_id, self._text("fast.label.usage"))
@@ -440,7 +440,7 @@ class TelegramSettingsController:
 
     async def _handle_permissions_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.permissions_picker
@@ -548,7 +548,7 @@ class TelegramSettingsController:
         return {"inline_keyboard": rows}
 
 
-    async def _show_group_mode_picker(self, incoming: Message) -> None:
+    async def _show_group_mode_picker(self, incoming: TelegramMessageContext) -> None:
         if not self.is_group:
             await self.telegram.send_message(
                 incoming.chat_id,
@@ -576,7 +576,7 @@ class TelegramSettingsController:
 
     async def _handle_group_mode_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.group_mode_picker
@@ -631,7 +631,7 @@ class TelegramSettingsController:
 
     async def _handle_mode_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.mode_picker
@@ -670,7 +670,7 @@ class TelegramSettingsController:
 
     async def _handle_skills_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.skill_picker
@@ -788,7 +788,7 @@ class TelegramSettingsController:
 
     async def _handle_memory_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.memory_picker
@@ -937,7 +937,7 @@ class TelegramSettingsController:
 
     async def _handle_language_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.language_picker
@@ -978,7 +978,7 @@ class TelegramSettingsController:
 
     async def _handle_model_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.model_picker

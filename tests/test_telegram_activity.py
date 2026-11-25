@@ -12,7 +12,7 @@ from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT, split_plain_text
 from telecodex.telegram.updates import parse_update
 from telecodex.telegram.user_controller import RunningCommand, TelegramUserController
 
-from multi_user_test_support import callback_event, message_event, FakeCodex, FakeTelegram, _catalog_text, _plain_html
+from multi_user_test_support import dispatch_user_update, callback_event, message_event, FakeCodex, FakeTelegram, _catalog_text, _plain_html
 
 class CodexActivityFormattingTests(unittest.TestCase):
     def test_plain_text_chunks_respect_limit_without_markdown_fences(self) -> None:
@@ -118,7 +118,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex = controller._codex()
             codex.state.thread_id = "active-thread"
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/recap")
             )
 
@@ -132,7 +132,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram = self._controller(Path(temp_dir))
             codex = controller._codex()
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/recap")
             )
             self.assertEqual(codex.messages, [])
@@ -140,7 +140,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
 
             codex.state.thread_id = "active-thread"
             codex.is_busy = True
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 78, 101, 101, "private", "/recap")
             )
             self.assertEqual(len(codex.messages), 1)
@@ -156,10 +156,10 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex = controller._codex()
             codex.state.thread_id = "active-thread"
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/plan")
             )
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 78, 101, 101, "private", "/plan")
             )
 
@@ -173,7 +173,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex = controller._codex()
             task = "Спланируй обновление интерфейса"
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", f"/plan {task}")
             )
 
@@ -181,7 +181,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(codex.messages, [task])
 
             codex.is_busy = True
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 78, 101, 101, "private", "/plan another task")
             )
             self.assertEqual(codex.messages, [task, "another task"])
@@ -224,15 +224,15 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-            self.assertIsInstance(plan, Message)
-            self.assertIsInstance(goal, Message)
-            await controller._handle_message(plan)  # type: ignore[arg-type]
-            await controller._handle_message(goal)  # type: ignore[arg-type]
+            self.assertIsInstance(plan.event, Message)
+            self.assertIsInstance(goal.event, Message)
+            await dispatch_user_update(controller, plan)  # type: ignore[arg-type]
+            await dispatch_user_update(controller, goal)  # type: ignore[arg-type]
 
             self.assertEqual(codex.messages, ["**Write** a plan"])
             self.assertEqual(codex.goal.objective, "*Finish* the task")  # type: ignore[union-attr]
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(3, 79, 101, 101, "private", "/goal edit")
             )
             edited_goal = parse_update(
@@ -247,8 +247,8 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                     },
                 }
             )
-            self.assertIsInstance(edited_goal, Message)
-            await controller._handle_message(edited_goal)  # type: ignore[arg-type]
+            self.assertIsInstance(edited_goal.event, Message)
+            await dispatch_user_update(controller, edited_goal)  # type: ignore[arg-type]
             self.assertEqual(codex.goal.objective, "**Revise** objective")  # type: ignore[union-attr]
             await controller._finish_typing()
 
@@ -291,7 +291,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "active-thread"
             codex.is_busy = True
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/compact")
             )
 
@@ -339,7 +339,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "active-thread"
             objective = "Исправь обработку повторных Telegram updates и проверь тесты"
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", f"/goal {objective}")
             )
             self.assertIsNotNone(codex.goal)
@@ -347,14 +347,14 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(codex.goal.status, "active")
             self.assertIn("Цель установлена", _plain_html(telegram.messages[-1][1]))
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 78, 101, 101, "private", "/goal")
             )
             self.assertIn(objective, telegram.messages[-1][1])
             self.assertIn("выполняется", telegram.messages[-1][1])
 
             codex.is_busy = True
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(3, 79, 101, 101, "private", "/goal pause")
             )
             self.assertEqual(codex.goal.status, "paused")
@@ -363,13 +363,13 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                 _plain_html(telegram.messages[-1][1]).lower(),
             )
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(4, 80, 101, 101, "private", "/goal resume")
             )
             self.assertEqual(codex.goal.status, "active")
             self.assertIn("Цель возобновлена", telegram.messages[-1][1])
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(5, 81, 101, 101, "private", "/goal clear")
             )
             self.assertIsNone(codex.goal)
@@ -381,7 +381,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram = self._controller(Path(temp_dir))
             codex = controller._codex()
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/goal Подготовь проект и проверь сборку")
             )
 
@@ -396,24 +396,24 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "active-thread"
             codex.goal = CodexGoal("Old objective", "paused", None, 20, 4)
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/goal edit")
             )
             self.assertIn("новым текстом цели", telegram.messages[-1][1].lower())
             self.assertIsNotNone(controller.pending_goal_edit)
 
             new_objective = "Finish the new objective"
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 78, 101, 101, "private", new_objective)
             )
             self.assertEqual(codex.goal.objective, new_objective)
             self.assertEqual(codex.goal.status, "active")
             self.assertIsNone(controller.pending_goal_edit)
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(3, 79, 101, 101, "private", "/goal edit")
             )
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(4, 80, 101, 101, "private", "/cancel")
             )
             self.assertIsNone(controller.pending_goal_edit)
@@ -426,15 +426,15 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram = self._controller(Path(temp_dir))
             codex = controller._codex()
 
-            await controller._handle_message(message_event(1, 77, 101, 101, "private", "/fast"))
+            await dispatch_user_update(controller, message_event(1, 77, 101, 101, "private", "/fast"))
             self.assertTrue(codex.fast_enabled)
             self.assertIn("Быстрый режим включён", _plain_html(telegram.messages[-1][1]))
 
-            await controller._handle_message(message_event(2, 78, 101, 101, "private", "/fast off"))
+            await dispatch_user_update(controller, message_event(2, 78, 101, 101, "private", "/fast off"))
             self.assertTrue(codex.fast_enabled)
             self.assertIn("не принимает аргументы", telegram.messages[-1][1])
 
-            await controller._handle_message(message_event(3, 79, 101, 101, "private", "/fast"))
+            await dispatch_user_update(controller, message_event(3, 79, 101, 101, "private", "/fast"))
             self.assertFalse(codex.fast_enabled)
             self.assertIn("стандартная скорость", telegram.messages[-1][1])
 
@@ -446,16 +446,16 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                 CodexSkill("reviewer", "Review changes", "/tmp/skills/reviewer/SKILL.md", True, "Reviewer")
             ]
 
-            await controller._handle_message(message_event(1, 77, 101, 101, "private", "/skills"))
+            await dispatch_user_update(controller, message_event(1, 77, 101, 101, "private", "/skills"))
             picker = controller.skill_picker
             self.assertIsNotNone(picker)
             assert picker is not None
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "callback-use", 101, 101, picker.message_id or 0,
                                 f"sk:{picker.token}:a:use")
             )
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "callback-skill", 101, 101, picker.message_id or 0,
                                 f"sk:{picker.token}:use:0")
             )
@@ -470,15 +470,15 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex = controller._codex()
             codex.skills = [CodexSkill("reviewer", "Review changes", "/skills/reviewer/SKILL.md", True)]
 
-            await controller._handle_message(message_event(1, 77, 101, 101, "private", "/skills"))
+            await dispatch_user_update(controller, message_event(1, 77, 101, 101, "private", "/skills"))
             picker = controller.skill_picker
             self.assertIsNotNone(picker)
             assert picker is not None
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "callback-manage", 101, 101, picker.message_id or 0,
                                 f"sk:{picker.token}:a:manage")
             )
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "callback-disable", 101, 101, picker.message_id or 0,
                                 f"sk:{picker.token}:toggle:0")
             )
@@ -492,12 +492,12 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram = self._controller(Path(temp_dir))
             codex = controller._codex()
 
-            await controller._handle_message(message_event(1, 77, 101, 101, "private", "/memories"))
+            await dispatch_user_update(controller, message_event(1, 77, 101, 101, "private", "/memories"))
             picker = controller.memory_picker
             self.assertIsNotNone(picker)
             assert picker is not None
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "callback-use-memory", 101, 101, picker.message_id or 0,
                                 f"mm:{picker.token}:use:enabled")
             )
@@ -520,12 +520,12 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("› Использовать в этом диалоге ‹", memory_labels)
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "callback-generate", 101, 101, picker.message_id or 0,
                                 f"mm:{picker.token}:generate")
             )
             self.assertFalse(codex.memory_settings.generate_memories)
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(4, "callback-confirm-generate", 101, 101, picker.message_id or 0,
                                 f"mm:{picker.token}:confirm")
             )
@@ -538,11 +538,11 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex = controller._codex()
             codex.memory_settings = CodexMemorySettings(False, False, False, "config-v1")
 
-            await controller._handle_message(message_event(1, 77, 101, 101, "private", "/memories"))
+            await dispatch_user_update(controller, message_event(1, 77, 101, 101, "private", "/memories"))
             picker = controller.memory_picker
             self.assertIsNotNone(picker)
             assert picker is not None
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "callback-enable", 101, 101, picker.message_id or 0,
                                 f"mm:{picker.token}:enable")
             )
@@ -554,19 +554,19 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram = self._controller(Path(temp_dir))
             codex = controller._codex()
-            await controller._handle_message(message_event(1, 77, 101, 101, "private", "/memories"))
+            await dispatch_user_update(controller, message_event(1, 77, 101, 101, "private", "/memories"))
             picker = controller.memory_picker
             self.assertIsNotNone(picker)
             assert picker is not None
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "reset-start", 101, 101, picker.message_id or 0,
                                 f"mm:{picker.token}:reset")
             )
             self.assertFalse(codex.memories_reset)
             self.assertIn("отменить действие нельзя", _plain_html(telegram.edits[-1][2]).lower())
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "reset-confirm", 101, 101, picker.message_id or 0,
                                 f"mm:{picker.token}:reset_confirm")
             )
@@ -580,7 +580,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "active-thread"
             codex.working_directory = project
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/init")
             )
 
@@ -600,7 +600,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "active-thread"
             codex.working_directory = project
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/init")
             )
 
@@ -621,7 +621,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "active-thread"
             codex.working_directory = project
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/init")
             )
 
@@ -647,7 +647,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                 for index in range(11)
             ]
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/ps")
             )
 
@@ -657,7 +657,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(len(row) == 1 for row in rows[:10]))
             navigation = rows[-1]
             next_callback = navigation[2]["callback_data"]
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "next", 101, 101, 1, next_callback)
             )
             self.assertIn("2/2", telegram.edits[-1][2])
@@ -681,18 +681,18 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                 )
             ]
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/ps")
             )
             view_callback = telegram.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "view", 101, 101, 1, view_callback)
             )
             self.assertIn("PID 4242", telegram.edits[-1][2])
             self.assertIn("[REDACTED]", telegram.edits[-1][2])
             self.assertNotIn("private-test-value", telegram.edits[-1][2])
             stop_callback = telegram.edit_markups[-1]["inline_keyboard"][0][0]["callback_data"]
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "stop", 101, 101, 1, stop_callback)
             )
 
@@ -706,7 +706,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram = self._controller(Path(temp_dir))
             codex = controller._codex()
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 77, 101, 101, "private", "/ps")
             )
             self.assertEqual(codex.background_terminal_list_calls, 0)
@@ -723,17 +723,17 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
                     rss_kb=128,
                 )
             ]
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(2, 78, 101, 101, "private", "/ps")
             )
             view_callback = telegram.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(3, "view", 101, 101, 2, view_callback)
             )
             stop_callback = telegram.edit_markups[-1]["inline_keyboard"][0][0]["callback_data"]
             codex.state.thread_id = "thread-after-switch"
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(4, "stale-stop", 101, 101, 2, stop_callback)
             )
 
@@ -1090,7 +1090,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram = self._controller(Path(temp_dir))
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 1, 101, 101, "private", "/mode")
             )
 
@@ -1098,7 +1098,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             markup = telegram.reply_markups[0]
             self.assertEqual([len(row) for row in markup["inline_keyboard"]], [1, 1, 1])
             callback_data = markup["inline_keyboard"][0][0]["callback_data"]
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "callback-1", 101, 101, 1, callback_data)
             )
 
@@ -1114,12 +1114,12 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_mode_picker_selects_quiet_answers_without_changing_content_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram = self._controller(Path(temp_dir))
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 1, 101, 101, "private", "/mode")
             )
             callback_data = telegram.reply_markups[0]["inline_keyboard"][1][0]["callback_data"]
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "quiet-callback", 101, 101, 1, callback_data)
             )
 
@@ -1165,7 +1165,7 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             markup = telegram.reply_markups[0]
             self.assertEqual([len(row) for row in markup["inline_keyboard"]], [1, 1, 1])
             callback_data = markup["inline_keyboard"][0][0]["callback_data"]
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(1, "approval-callback", 101, 101, 1, callback_data)
             )
 

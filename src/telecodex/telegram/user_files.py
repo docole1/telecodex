@@ -11,12 +11,13 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import CallbackQuery, FSInputFile
+from aiogram.types import FSInputFile
 
 from telecodex.telegram.activity import utf16_length
 from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT, truncate
 from telecodex.telegram.pagination import PAGE_SIZE, keyboard, navigation_row, page_count, two_column_rows
 from telecodex.telegram.pickers import FilesPicker
+from telecodex.telegram.updates import TelegramCallbackContext
 from telecodex.workspace_files import (
     WorkspaceEntry,
     WorkspaceFileBrowser,
@@ -171,7 +172,7 @@ class TelegramWorkspaceFilesController:
 
     async def _handle_files_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.picker

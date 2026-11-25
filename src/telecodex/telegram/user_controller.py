@@ -9,6 +9,7 @@ import secrets
 import tempfile
 import uuid
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
@@ -16,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import CallbackQuery, InputRichMessage, Message, ReplyParameters
+from aiogram.types import InputRichMessage, ReplyParameters
 
 from telecodex.codex.app_server import CodexAuthenticationError
 from telecodex.codex.permissions import PERMISSION_MODES
@@ -97,6 +98,8 @@ from telecodex.telegram.pickers import (
 )
 from telecodex.telegram.reply_format import format_long_text
 from telecodex.telegram.updates import (
+    TelegramCallbackContext,
+    TelegramMessageContext,
     command_argument_markdown,
     copy_message,
     parse_command,
@@ -413,7 +416,7 @@ class TelegramUserController(McpTelegramMixin):
     async def _show_permissions_picker(self, chat_id: int) -> None:
         await self.settings_ui._show_permissions_picker(chat_id)
 
-    async def _handle_fast_command(self, incoming: Message, argument: str) -> None:
+    async def _handle_fast_command(self, incoming: TelegramMessageContext, argument: str) -> None:
         await self.settings_ui._handle_fast_command(incoming, argument)
 
     def _permissions_picker_text(self) -> str:
@@ -422,7 +425,7 @@ class TelegramUserController(McpTelegramMixin):
     def _permissions_picker_keyboard(self, picker: PermissionsPicker) -> dict[str, Any]:
         return self.settings_ui._permissions_picker_keyboard(picker)
 
-    async def _handle_permissions_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_permissions_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_permissions_callback(incoming, parts)
 
     def _language_picker_keyboard(self, picker: LanguagePicker) -> dict[str, Any]:
@@ -443,25 +446,25 @@ class TelegramUserController(McpTelegramMixin):
     def _group_mode_picker_keyboard(self, picker: GroupModePicker) -> dict[str, Any]:
         return self.settings_ui._group_mode_picker_keyboard(picker)
 
-    async def _show_group_mode_picker(self, incoming: Message) -> None:
+    async def _show_group_mode_picker(self, incoming: TelegramMessageContext) -> None:
         await self.settings_ui._show_group_mode_picker(incoming)
 
-    async def _handle_group_mode_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_group_mode_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_group_mode_callback(incoming, parts)
 
-    async def _handle_mode_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_mode_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_mode_callback(incoming, parts)
 
-    async def _handle_skills_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_skills_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_skills_callback(incoming, parts)
 
-    async def _handle_memory_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_memory_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_memory_callback(incoming, parts)
 
-    async def _handle_language_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_language_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_language_callback(incoming, parts)
 
-    async def _handle_model_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_model_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         await self.settings_ui._handle_model_callback(incoming, parts)
 
     @staticmethod
@@ -522,14 +525,14 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _refresh_process_picker(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         picker: ProcessesPicker,
     ) -> None:
         await self.processes_ui._refresh_process_picker(incoming, picker)
 
     async def _handle_processes_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         await self.processes_ui._handle_processes_callback(incoming, parts)
@@ -564,7 +567,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_files_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         await self.files_ui._handle_files_callback(incoming, parts)
@@ -596,16 +599,16 @@ class TelegramUserController(McpTelegramMixin):
     async def close_shell_session(self) -> None:
         await self.shell_ui.close_shell_session()
 
-    async def _enter_shell(self, incoming: Message) -> None:
+    async def _enter_shell(self, incoming: TelegramMessageContext) -> None:
         await self.shell_ui._enter_shell(incoming)
 
-    async def _exit_shell(self, incoming: Message) -> None:
+    async def _exit_shell(self, incoming: TelegramMessageContext) -> None:
         await self.shell_ui._exit_shell(incoming)
 
-    async def _send_shell_input(self, incoming: Message) -> None:
+    async def _send_shell_input(self, incoming: TelegramMessageContext) -> None:
         await self.shell_ui._send_shell_input(incoming)
 
-    async def _stop_shell(self, incoming: Message) -> None:
+    async def _stop_shell(self, incoming: TelegramMessageContext) -> None:
         await self.shell_ui._stop_shell(incoming)
 
     async def _on_shell_output(self, output: ShellOutput) -> None:
@@ -1039,39 +1042,10 @@ class TelegramUserController(McpTelegramMixin):
                 except asyncio.TimeoutError:
                     pass
 
-    async def _handle_update(self, update: dict[str, Any]) -> None:
-        incoming = parse_update(update)
-        if incoming is None:
-            logger.debug(
-                "Ignored unsupported Telegram update shape",
-                extra={
-                    "event": "telegram.context.update_ignored",
-                    "access_decision": "unrecognized",
-                    "update_id": update.get("update_id") if isinstance(update.get("update_id"), int) else None,
-                },
-            )
-            return
-        await self._handle_incoming(incoming)
-
-    async def _handle_incoming(
-        self,
-        incoming: Message | CallbackQuery,
-        *,
-        message_route: str | None = None,
-        callback_route: str | None = None,
-    ) -> None:
-        prepared = await self._prepare_incoming(incoming)
-        if prepared is None:
-            return
-        if isinstance(prepared, CallbackQuery):
-            await self._handle_callback(prepared, callback_route=callback_route)
-            return
-        await self._handle_message(prepared, message_route=message_route, _preflighted=True)
-
     async def _prepare_incoming(
         self,
-        incoming: Message | CallbackQuery,
-    ) -> Message | CallbackQuery | None:
+        incoming: TelegramMessageContext | TelegramCallbackContext,
+    ) -> TelegramMessageContext | TelegramCallbackContext | None:
         accepted = (
             incoming.chat_id == self.chat_id
             and self._is_authorized_user(incoming.user_id)
@@ -1090,7 +1064,7 @@ class TelegramUserController(McpTelegramMixin):
                 },
             )
             return None
-        if isinstance(incoming, CallbackQuery):
+        if isinstance(incoming, TelegramCallbackContext):
             if not self.is_group and incoming.chat_id != incoming.user_id:
                 await self.telegram.answer_callback_query(
                     incoming.callback_id,
@@ -1105,6 +1079,8 @@ class TelegramUserController(McpTelegramMixin):
                     **self._log_context_fields(),
                 },
             )
+            if not await self._prepare_callback(incoming):
+                return None
             return incoming
         if self.is_group:
             if incoming.chat_type not in {"group", "supergroup"}:
@@ -1114,9 +1090,34 @@ class TelegramUserController(McpTelegramMixin):
             return None
         return await self._prepare_message(incoming)
 
+    async def _prepare_callback(self, incoming: TelegramCallbackContext) -> bool:
+        parts = incoming.data.split(":")
+        prefix = parts[0] if parts else ""
+        if self._chat_recovery_in_progress and prefix not in {"ap", "me", "rr"}:
+            await self.telegram.answer_callback_query(
+                incoming.callback_id,
+                self._text("recovery.label.in_progress"),
+            )
+            return False
+        if self._codex().is_busy and prefix and prefix not in BUSY_ALLOWED_CALLBACKS:
+            logger.info(
+                "Blocked Telegram action while Codex is busy",
+                extra={
+                    "event": "telegram.callback.blocked_while_busy",
+                    "callback_kind": prefix,
+                    **self._log_context_fields(),
+                },
+            )
+            await self.telegram.answer_callback_query(
+                incoming.callback_id,
+                self._text("thread_commands.label.busy"),
+            )
+            return False
+        return True
+
     async def _handle_media_group(self, updates: list[dict[str, Any]]) -> None:
         messages = [parse_update(update) for update in updates]
-        incoming_messages = [item for item in messages if isinstance(item, Message)]
+        incoming_messages = [item for item in messages if isinstance(item, TelegramMessageContext)]
         if not incoming_messages:
             return
         first = incoming_messages[0]
@@ -1177,62 +1178,20 @@ class TelegramUserController(McpTelegramMixin):
         unique_captions = list(unique_caption_models.items())
         grouped_text = "\n\n".join(caption for caption, _model in unique_captions)
         grouped_model_text = "\n\n".join(model for _caption, model in unique_captions)
-        grouped = first.model_copy(
-            update={
-                "text": grouped_text,
-                "entities": [],
-                "attachments": attachments,
-                "group_trigger_checked": self.is_group,
-                "group_trigger_required": self.is_group and not trigger_found,
-                "model_text": grouped_model_text,
-                "prompt_text": grouped_model_text,
-            }
+        grouped = replace(
+            first,
+            text_override=grouped_text,
+            entities_override=(),
+            attachments=attachments,
+            group_trigger_checked=self.is_group,
+            group_trigger_required=self.is_group and not trigger_found,
+            model_text=grouped_model_text,
         )
         prepared = await self._prepare_message(grouped)
         if prepared is not None:
-            await self._handle_message(prepared, _preflighted=True)
+            await self._handle_plain_message(prepared)
 
-    async def _handle_message(
-        self,
-        incoming: Message,
-        *,
-        message_route: str | None = None,
-        _preflighted: bool = False,
-    ) -> None:
-        if not _preflighted:
-            prepared = await self._prepare_message(incoming)
-            if prepared is None:
-                return
-            incoming = prepared
-        parsed = None if incoming.attachments else parse_command(incoming.text)
-        if message_route is not None and (parsed is None or parsed[0] != message_route):
-            logger.warning(
-                "Aiogram message route did not match message command",
-                extra={
-                    "event": "telegram.command.route_mismatch",
-                    "command_route": message_route,
-                    "command_name": parsed[0] if parsed else None,
-                    **self._log_context_fields(),
-                },
-            )
-            return
-        if parsed:
-            command, argument = parsed
-            model_argument = command_argument_markdown(incoming)
-            await self._dispatch_command(
-                incoming,
-                message_route or command,
-                argument,
-                model_argument,
-            )
-            return
-
-        if incoming.attachments:
-            await self._send_attachments(incoming)
-            return
-        await self._send_to_codex(incoming.chat_id, incoming.prompt_text, incoming.message_id)
-
-    async def _prepare_message(self, incoming: Message) -> Message | None:
+    async def _prepare_message(self, incoming: TelegramMessageContext) -> TelegramMessageContext | None:
         """Run stateful gates before Aiogram selects a command or message handler."""
         parsed = None if incoming.attachments else parse_command(incoming.text)
         command_name = parsed[0] if parsed else "message"
@@ -1252,9 +1211,6 @@ class TelegramUserController(McpTelegramMixin):
                 **self._log_context_fields(),
             },
         )
-        if parsed is not None and parsed[0] == "recover":
-            await self._request_chat_recovery(incoming)
-            return None
         if self.shell_session is not None:
             if incoming.attachments:
                 await self.telegram.send_message(
@@ -1262,12 +1218,6 @@ class TelegramUserController(McpTelegramMixin):
                     self._text("shell.label.attachments_unsupported"),
                     reply_to_message_id=incoming.message_id,
                 )
-                return None
-            if parsed is not None and parsed[0] == "exit":
-                await self._exit_shell(incoming)
-                return None
-            if parsed is not None and parsed[0] == "stop":
-                await self._stop_shell(incoming)
                 return None
             if parsed is None:
                 await self._send_shell_input(incoming)
@@ -1398,122 +1348,111 @@ class TelegramUserController(McpTelegramMixin):
             return None
         return incoming
 
-    async def _dispatch_command(
-        self,
-        incoming: Message,
-        command: str,
-        argument: str,
-        model_argument: str,
-    ) -> None:
-        """Invoke the command action selected by Aiogram's command route."""
-        async def show_help() -> None:
-            await self.telegram.send_message(incoming.chat_id, self._help_text())
+    async def _handle_help_command(self, incoming: TelegramMessageContext) -> None:
+        await self.telegram.send_message(incoming.chat_id, self._help_text())
 
-        async def show_doctor() -> None:
-            if self.is_group and incoming.user_id not in self.config.telegram_allowed_user_ids:
-                await self.telegram.send_message(
-                    incoming.chat_id,
-                    self._text("doctor.label.group_owner_only"),
-                )
-                return
-            try:
-                report = await collect_doctor_report(
-                    self.telegram,
-                    self._codex(),
-                    self.config.telegram_proxy is not None,
-                    self.audio_transcriber,
-                    self._poll_health() if self._poll_health else None,
-                )
-            except Exception as exc:
-                self._log_failure(
-                    "Could not collect TeleCodex diagnostics",
-                    exc,
-                    event="telegram.command.doctor_failed",
-                )
-                await self.telegram.send_message(incoming.chat_id, self._text("doctor.label.failed"))
-            else:
-                await self.telegram.send_message(incoming.chat_id, self._format_doctor_report(report))
-
-        async def show_status() -> None:
-            if getattr(self._codex(), "recovery_blocked", False):
-                await self.telegram.send_message(
-                    incoming.chat_id,
-                    self._text("recovery.label.blocked"),
-                )
-                return
-            try:
-                status = await self._codex().status_text(include_account=not self.is_group)
-                await self.telegram.send_message(incoming.chat_id, status)
-            except Exception as exc:
-                self._log_failure(
-                    "Could not read Codex status",
-                    exc,
-                    event="telegram.command.status_failed",
-                )
-                await self._send_error("errors.label.read_status")
-
-        async def show_processes() -> None:
-            if getattr(self._codex(), "recovery_blocked", False):
-                await self.telegram.send_message(
-                    incoming.chat_id,
-                    self._text("recovery.label.blocked"),
-                )
-                return
-            await self._show_processes(incoming.chat_id)
-
-        async def run_shell() -> None:
-            if argument.strip():
-                await self._run_shell(incoming.chat_id, argument)
-            else:
-                await self._enter_shell(incoming)
-
-        async def show_not_open_shell() -> None:
+    async def _handle_doctor_command(self, incoming: TelegramMessageContext) -> None:
+        if self.is_group and incoming.user_id not in self.config.telegram_allowed_user_ids:
             await self.telegram.send_message(
                 incoming.chat_id,
-                self._text("shell.label.not_open"),
-                reply_to_message_id=incoming.message_id,
+                self._text("doctor.label.group_owner_only"),
             )
-
-        actions: dict[str, Callable[[], Awaitable[None]]] = {
-            "start": show_help,
-            "help": show_help,
-            "doctor": show_doctor,
-            "status": show_status,
-            "permissions": lambda: self._show_permissions_picker(incoming.chat_id),
-            "rename": lambda: self._rename_chat(incoming.chat_id, argument),
-            "delete": lambda: self._show_delete_confirmation(incoming.chat_id),
-            "fork": lambda: self._fork_chat(incoming.chat_id),
-            "compact": lambda: self._compact_chat(incoming.chat_id),
-            "plan": lambda: self._handle_plan_command(incoming, argument, model_argument),
-            "goal": lambda: self._handle_goal_command(incoming, argument, model_argument),
-            "recap": lambda: self._recap_chat(incoming),
-            "init": lambda: self._init_project(incoming),
-            "ps": show_processes,
-            "new": lambda: self._show_directory_picker(incoming.chat_id),
-            "files": lambda: self._show_files_picker(incoming.chat_id, incoming.user_id),
-            "chats": lambda: self._show_chats_picker(incoming.chat_id),
-            "stop": lambda: self._stop_codex(incoming),
-            "model": lambda: self._show_model_picker(incoming.chat_id),
-            "fast": lambda: self._handle_fast_command(incoming, argument),
-            "skills": lambda: self._show_skills_picker(incoming.chat_id),
-            "memories": lambda: self._show_memory_picker(incoming.chat_id),
-            "mcp": lambda: self._show_mcp_picker(incoming.chat_id, argument, incoming.user_id),
-            "language": lambda: self._show_language_picker(incoming.chat_id),
-            "mode": lambda: self._show_mode_picker(incoming.chat_id),
-            "group_mode": lambda: self._show_group_mode_picker(incoming),
-            "shell": run_shell,
-            "exit": show_not_open_shell,
-        }
-        action = actions.get(command)
-        if action is not None:
-            await action()
-        elif self.shell_session is not None:
-            await self._send_shell_input(incoming)
+            return
+        try:
+            report = await collect_doctor_report(
+                self.telegram,
+                self._codex(),
+                self.config.telegram_proxy is not None,
+                self.audio_transcriber,
+                self._poll_health() if self._poll_health else None,
+            )
+        except Exception as exc:
+            self._log_failure(
+                "Could not collect TeleCodex diagnostics",
+                exc,
+                event="telegram.command.doctor_failed",
+            )
+            await self.telegram.send_message(incoming.chat_id, self._text("doctor.label.failed"))
         else:
             await self.telegram.send_message(
                 incoming.chat_id,
-                self._unknown_command_text(command),
+                self._format_doctor_report(report),
             )
+
+    async def _handle_status_command(self, incoming: TelegramMessageContext) -> None:
+        if getattr(self._codex(), "recovery_blocked", False):
+            await self.telegram.send_message(
+                incoming.chat_id,
+                self._text("recovery.label.blocked"),
+            )
+            return
+        try:
+            status = await self._codex().status_text(include_account=not self.is_group)
+            await self.telegram.send_message(incoming.chat_id, status)
+        except Exception as exc:
+            self._log_failure(
+                "Could not read Codex status",
+                exc,
+                event="telegram.command.status_failed",
+            )
+            await self._send_error("errors.label.read_status")
+
+    async def _handle_processes_command(self, incoming: TelegramMessageContext) -> None:
+        if getattr(self._codex(), "recovery_blocked", False):
+            await self.telegram.send_message(
+                incoming.chat_id,
+                self._text("recovery.label.blocked"),
+            )
+            return
+        await self._show_processes(incoming.chat_id)
+
+    async def _handle_shell_command(
+        self,
+        incoming: TelegramMessageContext,
+        argument: str,
+    ) -> None:
+        if argument.strip():
+            await self._run_shell(incoming.chat_id, argument)
+        else:
+            await self._enter_shell(incoming)
+
+    async def _handle_stop_command(self, incoming: TelegramMessageContext) -> None:
+        if self.shell_session is not None:
+            await self._stop_shell(incoming)
+        else:
+            await self._stop_codex(incoming)
+
+    async def _handle_exit_command(self, incoming: TelegramMessageContext) -> None:
+        if self.shell_session is not None:
+            await self._exit_shell(incoming)
+            return
+        await self.telegram.send_message(
+            incoming.chat_id,
+            self._text("shell.label.not_open"),
+            reply_to_message_id=incoming.message_id,
+        )
+
+    async def _handle_recover_command(self, incoming: TelegramMessageContext) -> None:
+        await self._request_chat_recovery(incoming)
+
+    async def _handle_unknown_command(
+        self,
+        incoming: TelegramMessageContext,
+        command: str,
+    ) -> None:
+        if self.shell_session is not None:
+            await self._send_shell_input(incoming)
+            return
+        await self.telegram.send_message(
+            incoming.chat_id,
+            self._unknown_command_text(command),
+        )
+
+    async def _handle_plain_message(self, incoming: TelegramMessageContext) -> None:
+        if incoming.attachments:
+            await self._send_attachments(incoming)
+            return
+        await self._send_to_codex(incoming.chat_id, incoming.prompt_text, incoming.message_id)
 
     def _consume_group_trigger(self, text: str) -> str | None:
         return strip_group_trigger(text, self._group_trigger_words())
@@ -1521,18 +1460,18 @@ class TelegramUserController(McpTelegramMixin):
     def _consume_group_trigger_with_offset(self, text: str) -> tuple[str, int] | None:
         return strip_group_trigger_with_offset(text, self._group_trigger_words())
 
-    def _is_reply_to_bot(self, incoming: Message) -> bool:
+    def _is_reply_to_bot(self, incoming: TelegramMessageContext) -> bool:
         bot_user_id = getattr(self.telegram, "id", None)
         return isinstance(bot_user_id, int) and incoming.reply_to_user_id == bot_user_id
 
-    async def _send_attachments(self, incoming: Message) -> None:
+    async def _send_attachments(self, incoming: TelegramMessageContext) -> None:
         await self._send_attachments_in_directory(
             incoming, self._codex().working_directory
         )
 
     async def _send_attachments_in_directory(
         self,
-        incoming: Message,
+        incoming: TelegramMessageContext,
         attachment_working_directory: Path,
     ) -> None:
         audio_attachments = [
@@ -1960,7 +1899,7 @@ class TelegramUserController(McpTelegramMixin):
 
 
 
-    async def _request_chat_recovery(self, incoming: Message) -> None:
+    async def _request_chat_recovery(self, incoming: TelegramMessageContext) -> None:
         codex = self._codex()
         if self._chat_recovery_in_progress:
             await self.telegram.send_message(
@@ -2057,7 +1996,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_chat_recovery_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         pending = self.pending_chat_recovery
@@ -2233,7 +2172,7 @@ class TelegramUserController(McpTelegramMixin):
         if self._compaction_input_queue:
             self._start_compaction_input_queue_worker()
 
-    async def _stop_codex(self, incoming: Message) -> None:
+    async def _stop_codex(self, incoming: TelegramMessageContext) -> None:
         codex = self._codex()
         discarded = self._discard_compaction_input_queue()
         cancelled_compaction = await codex.cancel_pending_manual_compaction()
@@ -2274,82 +2213,9 @@ class TelegramUserController(McpTelegramMixin):
 
 
 
-    async def _handle_callback(
-        self,
-        incoming: CallbackQuery,
-        *,
-        callback_route: str | None = None,
-    ) -> None:
-        parts = incoming.data.split(":")
-        route = callback_route if callback_route is not None else (parts[0] if parts else "")
-        if parts and parts[0] != route:
-            logger.warning(
-                "Aiogram callback route did not match callback data",
-                extra={
-                    "event": "telegram.callback.route_mismatch",
-                    "callback_route": route,
-                    "callback_kind": parts[0],
-                    **self._log_context_fields(),
-                },
-            )
-            await self.telegram.answer_callback_query(
-                incoming.callback_id,
-                self._text("common.label.stale_button"),
-            )
-            return
-        if self._chat_recovery_in_progress and parts and parts[0] not in {"ap", "me", "rr"}:
-            await self.telegram.answer_callback_query(
-                incoming.callback_id,
-                self._text("recovery.label.in_progress"),
-            )
-            return
-        if (
-            self._codex().is_busy
-            and parts
-            and parts[0] not in BUSY_ALLOWED_CALLBACKS
-        ):
-            logger.info(
-                "Blocked Telegram action while Codex is busy",
-                extra={
-                    "event": "telegram.callback.blocked_while_busy",
-                    "callback_kind": parts[0],
-                    **self._log_context_fields(),
-                },
-            )
-            await self.telegram.answer_callback_query(
-                incoming.callback_id,
-                self._text("thread_commands.label.busy"),
-            )
-            return
-        handlers: dict[str, Callable[[CallbackQuery, list[str]], Awaitable[None]]] = {
-            "l": self._handle_language_callback,
-            "om": self._handle_mode_callback,
-            "gm": self._handle_group_mode_callback,
-            "sk": self._handle_skills_callback,
-            "mm": self._handle_memory_callback,
-            "m": self._handle_model_callback,
-            "np": self._handle_directory_callback,
-            "fb": self._handle_files_callback,
-            "cp": self._handle_chats_callback,
-            "pm": self._handle_permissions_callback,
-            "td": self._handle_delete_callback,
-            "ps": self._handle_processes_callback,
-            "mc": self._handle_mcp_callback,
-            "sw": self._handle_thread_switch_callback,
-            "rc": self._handle_stale_turn_callback,
-            "rr": self._handle_chat_recovery_callback,
-            "me": self._handle_mcp_elicitation_callback,
-            "ap": self._handle_approval_callback,
-        }
-        handler = handlers.get(route)
-        if handler is not None:
-            await handler(incoming, parts)
-            return
-        await self.telegram.answer_callback_query(incoming.callback_id, self._text("common.label.stale_button"))
-
     async def _handle_approval_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         if len(parts) != 3:
@@ -2535,7 +2401,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_delete_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         confirmation = self.delete_confirmation
@@ -2718,7 +2584,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_plan_command(
         self,
-        incoming: Message,
+        incoming: TelegramMessageContext,
         argument: str,
         model_argument: str | None = None,
     ) -> None:
@@ -2774,7 +2640,7 @@ class TelegramUserController(McpTelegramMixin):
         else:
             await self._send_to_codex(incoming.chat_id, model_value, incoming.message_id)
 
-    async def _consume_goal_edit_input(self, incoming: Message) -> bool:
+    async def _consume_goal_edit_input(self, incoming: TelegramMessageContext) -> bool:
         pending = self.pending_goal_edit
         if pending is None:
             return False
@@ -2856,7 +2722,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_goal_command(
         self,
-        incoming: Message,
+        incoming: TelegramMessageContext,
         argument: str,
         model_argument: str | None = None,
     ) -> None:
@@ -2992,7 +2858,7 @@ class TelegramUserController(McpTelegramMixin):
             )
 
 
-    async def _recap_chat(self, incoming: Message) -> None:
+    async def _recap_chat(self, incoming: TelegramMessageContext) -> None:
         codex = self._codex()
         if not codex.state.thread_id:
             await self.telegram.send_message(
@@ -3002,7 +2868,7 @@ class TelegramUserController(McpTelegramMixin):
             return
         await self._send_to_codex(incoming.chat_id, RECAP_PROMPT, incoming.message_id)
 
-    async def _init_project(self, incoming: Message) -> None:
+    async def _init_project(self, incoming: TelegramMessageContext) -> None:
         codex = self._codex()
         if not codex.state.thread_id:
             await self.telegram.send_message(
@@ -3167,7 +3033,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _show_chat_details(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         picker: ChatsPicker,
         index: int,
     ) -> None:
@@ -3222,7 +3088,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _show_active_writer_recovery(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         picker: ChatsPicker,
         index: int,
         *,
@@ -3241,7 +3107,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _open_chat_from_picker(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         picker: ChatsPicker,
         index: int,
         *,
@@ -3324,7 +3190,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_directory_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.directory_picker
@@ -3444,7 +3310,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_chats_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.chats_picker
@@ -3913,7 +3779,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _request_thread_switch(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         *,
         action: str,
         path: Path | None = None,
@@ -3967,7 +3833,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_thread_switch_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         pending = self.pending_thread_switch
@@ -4107,7 +3973,7 @@ class TelegramUserController(McpTelegramMixin):
 
     async def _handle_stale_turn_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         if len(parts) != 3:

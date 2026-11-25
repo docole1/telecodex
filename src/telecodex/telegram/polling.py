@@ -10,12 +10,14 @@ from typing import Any, Callable
 from aiogram import BaseMiddleware
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram.methods import GetUpdates
-from aiogram.types import CallbackQuery, Message, TelegramObject, Update
+from aiogram.types import TelegramObject, Update
 
 from telecodex.logging_config import bind_log_context, log_exception, log_identifier
 from telecodex.state import RuntimeStateStore
 from telecodex.telegram.controller import TelegramController
 from telecodex.telegram.updates import (
+    TelegramCallbackContext,
+    TelegramMessageContext,
     aiogram_update_to_dict,
     parse_aiogram_update,
 )
@@ -96,7 +98,7 @@ class TelegramUpdateMiddleware(BaseMiddleware):
             with bind_log_context(**context_fields):
                 raw_update = aiogram_update_to_dict(event)
                 incoming = parse_aiogram_update(event)
-                if isinstance(incoming, Message):
+                if isinstance(incoming, TelegramMessageContext):
                     context_fields = {
                         **context_fields,
                         "context_kind": incoming.chat_type or "unknown",
@@ -109,7 +111,7 @@ class TelegramUpdateMiddleware(BaseMiddleware):
                             namespace="telegram-user",
                         ),
                     }
-                elif isinstance(incoming, CallbackQuery):
+                elif isinstance(incoming, TelegramCallbackContext):
                     context_fields = {
                         **context_fields,
                         "context_kind": "callback",
@@ -124,7 +126,7 @@ class TelegramUpdateMiddleware(BaseMiddleware):
                     }
                 data["telecodex_update"] = event
                 data["telecodex_update_data"] = raw_update
-                data["telecodex_incoming"] = incoming
+                data["telecodex_context"] = incoming
                 with bind_log_context(**context_fields):
                     logger.info(
                         "Telegram update received",

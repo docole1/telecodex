@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -13,14 +14,118 @@ from telecodex.documents.processor import AUDIO_EXTENSIONS
 from telecodex.telegram.markdown_input import slice_entities, to_model_markdown, to_model_markdown_slice
 
 
-TelegramEvent = Message | CallbackQuery
+@dataclass(frozen=True, slots=True)
+class TelegramMessageContext:
+    """TeleCodex metadata carried through Aiogram handler data."""
+
+    event: Message
+    update_id: int
+    model_text: str
+    attachments: tuple[TelegramAttachment, ...] = ()
+    group_trigger_checked: bool = False
+    group_trigger_required: bool = False
+    text_override: str | None = None
+    entities_override: tuple[Any, ...] | None = None
+
+    @property
+    def message_id(self) -> int:
+        return self.event.message_id
+
+    @property
+    def user_id(self) -> int:
+        return self.event.from_user.id  # type: ignore[union-attr]
+
+    @property
+    def chat_id(self) -> int:
+        return self.event.chat.id
+
+    @property
+    def chat_type(self) -> str:
+        return str(self.event.chat.type)
+
+    @property
+    def chat_title(self) -> str | None:
+        return self.event.chat.title
+
+    @property
+    def media_group_id(self) -> str | None:
+        return self.event.media_group_id
+
+    @property
+    def text(self) -> str:
+        if self.text_override is not None:
+            return self.text_override
+        return self.event.text if self.event.text is not None else self.event.caption or ""
+
+    @property
+    def entities(self) -> tuple[Any, ...]:
+        if self.entities_override is not None:
+            return self.entities_override
+        values = self.event.entities if self.event.text is not None else self.event.caption_entities
+        return tuple(values or ())
+
+    @property
+    def reply_to_user_id(self) -> int | None:
+        reply = self.event.reply_to_message
+        return reply.from_user.id if reply is not None and reply.from_user is not None else None
+
+    @property
+    def prompt_text(self) -> str:
+        return self.model_text
+
+    def without_prefix(self, prefix_length: int) -> TelegramMessageContext:
+        text, entities = slice_entities(self.text, self.entities, prefix_length)
+        prompt_text = to_model_markdown(text, entities)
+        return replace(
+            self,
+            text_override=text,
+            entities_override=tuple(entities),
+            model_text=prompt_text,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramCallbackContext:
+    """TeleCodex callback metadata carried through Aiogram handler data."""
+
+    event: CallbackQuery
+    update_id: int
+
+    @property
+    def callback_id(self) -> str:
+        return self.event.id
+
+    @property
+    def user_id(self) -> int:
+        return self.event.from_user.id
+
+    @property
+    def chat_id(self) -> int:
+        message = self.event.message
+        if message is None:
+            raise ValueError("Callback query has no accessible chat message")
+        return message.chat.id
+
+    @property
+    def message_id(self) -> int:
+        message = self.event.message
+        if message is None:
+            raise ValueError("Callback query has no accessible chat message")
+        return message.message_id
+
+    @property
+    def data(self) -> str:
+        return self.event.data or ""
+
+
+TelegramEventContext = TelegramMessageContext | TelegramCallbackContext
 
 
 def parse_update(
     update: dict[str, Any],
     *,
     model_text: str | None = None,
-) -> TelegramEvent | None:
+) -> TelegramEventContext | None:
     try:
         typed_update = Update.model_validate(_normalize_update_for_aiogram(update))
     except Exception:
@@ -32,8 +137,8 @@ def parse_aiogram_update(
     update: Update,
     *,
     model_text: str | None = None,
-) -> TelegramEvent | None:
-    """Return an Aiogram event enriched with TeleCodex routing context."""
+) -> TelegramEventContext | None:
+    """Build TeleCodex metadata separately from the original Aiogram event."""
     if not isinstance(update.update_id, int):
         return None
     message = update.message
@@ -45,28 +150,12 @@ def parse_aiogram_update(
         attachments = _parse_message_attachments(raw_message)
         if user_id is None or (not text and not attachments):
             return None
-        reply_user = (
-            message.reply_to_message.from_user
-            if message.reply_to_message is not None
-            else None
-        )
         markdown = model_text if model_text is not None else to_model_markdown(text, entities)
-        return message.model_copy(
-            update={
-                "text": text,
-                "entities": list(entities or []),
-                "update_id": update.update_id,
-                "user_id": user_id,
-                "chat_id": message.chat.id,
-                "chat_type": message.chat.type,
-                "chat_title": message.chat.title,
-                "attachments": attachments,
-                "group_trigger_checked": False,
-                "group_trigger_required": False,
-                "reply_to_user_id": reply_user.id if reply_user is not None else None,
-                "model_text": markdown,
-                "prompt_text": markdown,
-            }
+        return TelegramMessageContext(
+            event=message,
+            update_id=update.update_id,
+            model_text=markdown,
+            attachments=attachments,
         )
 
     callback = update.callback_query
@@ -75,20 +164,11 @@ def parse_aiogram_update(
     message = callback.message
     if message is None:
         return None
-    return callback.model_copy(
-        update={
-            "update_id": update.update_id,
-            "callback_id": callback.id,
-            "user_id": callback.from_user.id,
-            "chat_id": message.chat.id,
-            "message_id": message.message_id,
-            "data": callback.data,
-        }
-    )
+    return TelegramCallbackContext(event=callback, update_id=update.update_id)
 
 
-def command_argument_markdown(message: Message) -> str:
-    text = message.text or message.caption or ""
+def command_argument_markdown(message: TelegramMessageContext) -> str:
+    text = message.text
     _command, separator, _argument = text.partition(" ")
     if not separator:
         return ""
@@ -96,27 +176,18 @@ def command_argument_markdown(message: Message) -> str:
     end = len(text.rstrip())
     while start < end and text[start].isspace():
         start += 1
-    entities = message.entities if message.text is not None else message.caption_entities
-    return to_model_markdown_slice(text, entities, start, end)
+    return to_model_markdown_slice(text, message.entities, start, end)
 
 
-def without_message_prefix(message: Message, prefix_length: int) -> Message:
-    text = message.text or message.caption or ""
-    entities = message.entities if message.text is not None else message.caption_entities
-    text, sliced_entities = slice_entities(text, entities, prefix_length)
-    prompt_text = to_model_markdown(text, sliced_entities)
-    return message.model_copy(
-        update={
-            "text": text,
-            "entities": list(sliced_entities),
-            "model_text": prompt_text,
-            "prompt_text": prompt_text,
-        }
-    )
+def without_message_prefix(
+    message: TelegramMessageContext,
+    prefix_length: int,
+) -> TelegramMessageContext:
+    return message.without_prefix(prefix_length)
 
 
-def copy_message(message: Message, **updates: Any) -> Message:
-    return message.model_copy(update=updates)
+def copy_message(message: TelegramMessageContext, **updates: Any) -> TelegramMessageContext:
+    return replace(message, **updates)
 
 
 def _normalize_update_for_aiogram(update: dict[str, Any]) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from telecodex.shell.runner import ShellResult
 from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT
 from telecodex.telegram.user_controller import TelegramUserController
 
-from multi_user_test_support import FakeCodex, FakeTelegram, _catalog_text, callback_event, message_event
+from multi_user_test_support import dispatch_user_update, FakeCodex, FakeTelegram, _catalog_text, callback_event, message_event
 
 class ShellHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_shell_result_is_sent(self) -> None:
@@ -108,7 +108,7 @@ class WorkspaceFilesUiTests(unittest.IsolatedAsyncioTestCase):
             codex.working_directory = project
             controller.bind_codex(codex)  # type: ignore[arg-type]
 
-            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/files"))
+            await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/files"))
 
             picker = controller.files_picker
             self.assertIsNotNone(picker)
@@ -121,7 +121,7 @@ class WorkspaceFilesUiTests(unittest.IsolatedAsyncioTestCase):
                     for button in row
                 )
             )
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(
                     2,
                     "open-file",
@@ -133,7 +133,7 @@ class WorkspaceFilesUiTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("note.txt", telegram.edits[-1][2])
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(
                     3,
                     "preview-file",
@@ -146,7 +146,7 @@ class WorkspaceFilesUiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("<pre>project contents</pre>", telegram.messages[-1][1])
             self.assertEqual(telegram.message_entities[-1], [])
 
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(
                     4,
                     "download-file",

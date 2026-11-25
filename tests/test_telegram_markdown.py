@@ -64,7 +64,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, Message)
+        self.assertIsInstance(incoming.event, Message)  # type: ignore[union-attr]
         self.assertEqual(incoming.text, "Start the task")  # type: ignore[union-attr]
         self.assertEqual(incoming.prompt_text, "Start the **tas**k")  # type: ignore[union-attr]
 
@@ -83,7 +83,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, Message)
+        self.assertIsInstance(incoming.event, Message)  # type: ignore[union-attr]
         self.assertEqual(incoming.prompt_text, "Review *this*")  # type: ignore[union-attr]
 
     def test_command_argument_keeps_formatting_without_changing_command_parse(self) -> None:
@@ -100,7 +100,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, Message)
+        self.assertIsInstance(incoming.event, Message)  # type: ignore[union-attr]
         self.assertEqual(incoming.text.partition(" ")[0], "/plan")  # type: ignore[union-attr]
         self.assertEqual(command_argument_markdown(incoming), "**Write** a careful plan")  # type: ignore[arg-type]
 

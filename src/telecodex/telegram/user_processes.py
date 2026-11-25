@@ -8,13 +8,13 @@ import secrets
 from typing import Any, Callable
 
 from aiogram import Bot
-from aiogram.types import CallbackQuery
 
 from telecodex.codex.types import CodexBackgroundTerminal
 from telecodex.logging_config import redact_text
 from telecodex.telegram.formatting import truncate
 from telecodex.telegram.pagination import PAGE_SIZE, keyboard, navigation_row, page_count, two_column_rows
 from telecodex.telegram.pickers import ProcessesPicker
+from telecodex.telegram.updates import TelegramCallbackContext
 
 _SENSITIVE_COMMAND_ARGUMENT = re.compile(
     r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|credential|auth)(?:=|\s+))"
@@ -195,7 +195,7 @@ class TelegramProcessesController:
 
     async def _refresh_process_picker(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         picker: ProcessesPicker,
     ) -> None:
         picker.terminals = await self._codex().list_background_terminals()
@@ -220,7 +220,7 @@ class TelegramProcessesController:
 
     async def _handle_processes_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         picker = self.picker

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from multi_user_test_support import FakeSentMessage, callback_event, message_event
+from multi_user_test_support import dispatch_user_update, FakeSentMessage, callback_event, message_event
 
 from telecodex.config import AppConfig
 from telecodex.codex.session import CodexThread
@@ -205,18 +205,18 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             workspace.mkdir()
             controller, telegram, codex = self._controller(workspace)
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(1, 1, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/shell"))
                 shell = controller.shell_session
                 self.assertIsNotNone(shell)
 
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "cd .."))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "cd .."))
                 self.assertEqual(shell.working_directory, workspace.parent)  # type: ignore[union-attr]
                 self.assertEqual(codex.working_directory, workspace)
 
-                await controller._handle_message(message_event(3, 3, 101, 101, "private", "/new"))
+                await dispatch_user_update(controller, message_event(3, 3, 101, 101, "private", "/new"))
                 picker = controller.directory_picker
                 self.assertIsNotNone(picker)
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(
                         4,
                         "choose-directory",
@@ -229,7 +229,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertIsNone(controller.shell_session)
                 self.assertEqual(codex.new_thread_calls, [(workspace, False)])
-                await controller._handle_message(
+                await dispatch_user_update(controller,
                     message_event(5, 5, 101, 101, "private", "continue in Codex")
                 )
                 self.assertEqual(codex.messages, ["continue in Codex"])
@@ -246,22 +246,22 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram, codex = self._controller(workspace)
             codex.threads = [codex_thread]
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(1, 1, 101, 101, "private", "/shell"))
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "/chats"))
+                await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "/chats"))
                 picker = controller.chats_picker
                 self.assertIsNotNone(picker)
                 detail = self._callback(telegram.markups[-1], ":v:0")
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(3, "open-details", 101, 101, picker.message_id or 0, detail)  # type: ignore[union-attr]
                 )
                 select = self._callback(telegram.edits[-1][3], ":s:0")
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(4, "select-chat", 101, 101, picker.message_id or 0, select)  # type: ignore[union-attr]
                 )
 
                 self.assertIsNone(controller.shell_session)
                 self.assertEqual(codex.select_calls, [("thread-other", target, False)])
-                await controller._handle_message(
+                await dispatch_user_update(controller,
                     message_event(5, 5, 101, 101, "private", "continue in selected chat")
                 )
                 self.assertEqual(codex.messages, ["continue in selected chat"])
@@ -271,9 +271,9 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             workspace = Path(temporary)
             controller, _telegram, codex = self._controller(workspace)
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(1, 1, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/shell"))
                 shell = controller.shell_session
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "/fork"))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "/fork"))
 
                 self.assertEqual(codex.state.thread_id, "thread-forked")
                 self.assertIsNone(controller.shell_session)
@@ -289,10 +289,10 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
                 "thread-current", "turn-current", 1, 1, phase="running"
             )
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(1, 1, 101, 101, "private", "/shell"))
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "/new"))
+                await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "/new"))
                 picker = controller.directory_picker
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(
                         3,
                         "choose-directory",
@@ -307,7 +307,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(codex.is_busy)
                 confirm = self._callback(telegram.markups[-1], ":yes")
                 message_id = telegram.next_message_id - 1
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(4, "confirm-new", 101, 101, message_id, confirm)
                 )
 
@@ -328,22 +328,22 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
                 "thread-current", "turn-current", 1, 1, phase="running"
             )
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(1, 1, 101, 101, "private", "/shell"))
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "/chats"))
+                await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "/chats"))
                 picker = controller.chats_picker
                 detail = self._callback(telegram.markups[-1], ":v:0")
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(3, "open-details", 101, 101, picker.message_id or 0, detail)  # type: ignore[union-attr]
                 )
                 select = self._callback(telegram.edits[-1][3], ":s:0")
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(4, "select-chat", 101, 101, picker.message_id or 0, select)  # type: ignore[union-attr]
                 )
 
                 confirmation = telegram.markups[-1]
                 cancel = self._callback(confirmation, ":no")
                 message_id = telegram.next_message_id - 1
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(5, "cancel-switch", 101, 101, message_id, cancel)
                 )
 
@@ -364,22 +364,22 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
                 "thread-current", "turn-current", 1, 1, phase="running"
             )
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(1, 1, 101, 101, "private", "/shell"))
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "/chats"))
+                await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "/chats"))
                 picker = controller.chats_picker
                 detail = self._callback(telegram.markups[-1], ":v:0")
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(3, "open-details", 101, 101, picker.message_id or 0, detail)  # type: ignore[union-attr]
                 )
                 select = self._callback(telegram.edits[-1][3], ":s:0")
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(4, "select-chat", 101, 101, picker.message_id or 0, select)  # type: ignore[union-attr]
                 )
 
                 confirmation = telegram.markups[-1]
                 confirm = self._callback(confirmation, ":yes")
                 message_id = telegram.next_message_id - 1
-                await controller._handle_callback(
+                await dispatch_user_update(controller,
                     callback_event(5, "confirm-switch", 101, 101, message_id, confirm)
                 )
 
@@ -387,7 +387,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(codex.select_calls, [("thread-other", target, True)])
                 self.assertEqual(codex.messages, [])
                 self.assertIsNone(controller.shell_session)
-                await controller._handle_message(
+                await dispatch_user_update(controller,
                     message_event(6, 6, 101, 101, "private", "new task")
                 )
                 self.assertEqual(codex.messages, ["new task"])
@@ -410,7 +410,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([len(row) for row in recovery_rows], [1, 1])
             switch = self._callback(telegram.markups[-1], ":switch")
             message_id = telegram.next_message_id - 1
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "switch-quiet-turn", 101, 101, message_id, switch)
             )
 
@@ -436,7 +436,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             await controller.send_recovery_switch_offer()
             wait = self._callback(telegram.markups[-1], ":wait")
             message_id = telegram.next_message_id - 1
-            await controller._handle_callback(
+            await dispatch_user_update(controller,
                 callback_event(2, "wait-for-turn", 101, 101, message_id, wait)
             )
 
@@ -465,14 +465,14 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_typo_suggests_commands_but_typo_inside_shell_stays_shell_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             controller, telegram, _codex = self._controller(Path(temporary))
-            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/neww"))
+            await dispatch_user_update(controller, message_event(1, 1, 101, 101, "private", "/neww"))
             self.assertIn("/new", telegram.messages[-1][1])
             self.assertEqual(_codex.messages, [])
 
             with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
-                await controller._handle_message(message_event(2, 2, 101, 101, "private", "/shell"))
+                await dispatch_user_update(controller, message_event(2, 2, 101, 101, "private", "/shell"))
                 session = controller.shell_session
-                await controller._handle_message(message_event(3, 3, 101, 101, "private", "/neww"))
+                await dispatch_user_update(controller, message_event(3, 3, 101, 101, "private", "/neww"))
                 self.assertEqual(session.inputs, ["/neww"])  # type: ignore[union-attr]
                 await controller.close_shell_session()
 

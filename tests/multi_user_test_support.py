@@ -6,10 +6,12 @@ import json
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from aiogram import Bot
 from aiogram.types import Update
 
 from telecodex.config import AppConfig, ProxySettings, load_config
@@ -40,7 +42,13 @@ from telecodex.i18n import TextCatalog
 from telecodex.shell.runner import ShellResult
 from telecodex.state import PendingTurnState, RuntimeState, RuntimeStateStore, ThreadRuntimeState
 from telecodex.telegram.controller import TelegramController
-from telecodex.telegram.updates import parse_aiogram_update
+from telecodex.telegram.routers import TelegramUpdateRouters
+from telecodex.telegram.updates import (
+    TelegramCallbackContext,
+    TelegramMessageContext,
+    parse_aiogram_update,
+    parse_update,
+)
 from telecodex.telegram.user_controller import (
     PendingApproval,
     RunningCommand,
@@ -116,13 +124,12 @@ def message_event(
     update = Update.model_validate({"update_id": update_id, "message": raw_message})
     message = parse_aiogram_update(update, model_text=model_text)
     if message is None:
-        raise ValueError("Test message did not produce an Aiogram Message")
-    return message.model_copy(
-        update={
-            "attachments": attachments,
-            "group_trigger_checked": group_trigger_checked,
-            "group_trigger_required": group_trigger_required,
-        }
+        raise ValueError("Test update did not produce a Telegram message context")
+    return replace(
+        message,
+        attachments=attachments,
+        group_trigger_checked=group_trigger_checked,
+        group_trigger_required=group_trigger_required,
     )
 
 
@@ -155,7 +162,7 @@ def callback_event(
     )
     callback = parse_aiogram_update(update)
     if callback is None:
-        raise ValueError("Test callback did not produce an Aiogram CallbackQuery")
+        raise ValueError("Test update did not produce a Telegram callback context")
     return callback
 
 
@@ -164,6 +171,123 @@ def _catalog_text(key: str, **values: Any) -> str:
 
 
 _HTML_FORMAT_TAG = re.compile(r"</?(?:strong|code|pre)>")
+_TEST_BOT_TOKEN = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+
+
+class _NoopMediaGroups:
+    async def flush_before(self, _update: dict[str, Any]) -> None:
+        return None
+
+    async def add(self, _update: dict[str, Any]) -> bool:
+        return True
+
+
+def _typed_update(context: TelegramMessageContext | TelegramCallbackContext) -> Update:
+    if isinstance(context, TelegramMessageContext):
+        return Update.model_validate(
+            {
+                "update_id": context.update_id,
+                "message": context.event.model_dump(mode="json", by_alias=True, exclude_none=True),
+            }
+        )
+    return Update.model_validate(
+        {
+            "update_id": context.update_id,
+            "callback_query": context.event.model_dump(mode="json", by_alias=True, exclude_none=True),
+        }
+    )
+
+
+async def dispatch_controller_update(
+    controller: TelegramController,
+    update: dict[str, Any],
+) -> None:
+    context = parse_update(update)
+    if context is None:
+        return
+    typed_update = _typed_update(context)
+    bot = Bot(_TEST_BOT_TOKEN)
+    try:
+        routes = TelegramUpdateRouters(controller, _NoopMediaGroups())  # type: ignore[arg-type]
+        await routes.dispatcher.feed_update(
+            bot,
+            typed_update,
+            telecodex_update=typed_update,
+        )
+    finally:
+        await bot.session.close()
+
+
+class _UserControllerRouterAdapter:
+    def __init__(self, controller: TelegramUserController) -> None:
+        self.user_controller = controller
+        self.config = controller.config
+        self.state_store = type(
+            "TestGroupState",
+            (),
+            {"is_group_attached": lambda _self, _chat_id: controller.is_group and controller.attached},
+        )()
+
+    def can_user_access_context(self, chat_id: int, user_id: int) -> bool:
+        return (
+            self.user_controller._is_authorized_user(user_id)
+            and (chat_id == user_id or (chat_id < 0 and self.user_controller.is_group and self.user_controller.attached))
+        )
+
+    async def _prepare_incoming(
+        self,
+        context: TelegramMessageContext | TelegramCallbackContext,
+    ):
+        prepared = await self.user_controller._prepare_incoming(context)
+        if prepared is None:
+            return None
+        return self.user_controller, prepared
+
+
+async def _feed_aiogram_context(controller: Any, context: TelegramMessageContext | TelegramCallbackContext) -> None:
+    bot = Bot(_TEST_BOT_TOKEN)
+    try:
+        routes = TelegramUpdateRouters(controller, _NoopMediaGroups())  # type: ignore[arg-type]
+        update = _typed_update(context)
+        await routes.dispatcher.feed_update(bot, update, telecodex_update=update)
+    finally:
+        await bot.session.close()
+
+
+async def dispatch_controller_update(
+    controller: TelegramController,
+    update: dict[str, Any],
+) -> None:
+    context = parse_update(update)
+    if context is not None:
+        await _feed_aiogram_context(controller, context)
+
+
+async def dispatch_user_update(
+    controller: TelegramUserController,
+    context: TelegramMessageContext | TelegramCallbackContext,
+) -> None:
+    await _feed_aiogram_context(_UserControllerRouterAdapter(controller), context)
+
+
+async def dispatch_user_update(
+    controller: TelegramUserController,
+    context: TelegramMessageContext | TelegramCallbackContext,
+) -> None:
+    typed_update = _typed_update(context)
+    bot = Bot(_TEST_BOT_TOKEN)
+    try:
+        routes = TelegramUpdateRouters(
+            _UserControllerRouterAdapter(controller),  # type: ignore[arg-type]
+            _NoopMediaGroups(),  # type: ignore[arg-type]
+        )
+        await routes.dispatcher.feed_update(
+            bot,
+            typed_update,
+            telecodex_update=typed_update,
+        )
+    finally:
+        await bot.session.close()
 
 
 def _plain_html(text: str) -> str:

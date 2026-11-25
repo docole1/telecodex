@@ -12,6 +12,7 @@ from telecodex.telegram.controller import TelegramController
 from telecodex.telegram.user_controller import PendingApproval, TelegramUserController
 
 from multi_user_test_support import (
+    dispatch_controller_update,
     BOT_TRIGGER_CYRILLIC,
     CODEX_TRIGGER_CYRILLIC,
     FailingCodex,
@@ -360,9 +361,9 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             return sessions[user_id]
 
         controller = TelegramController(config, telegram, object(), make_session)  # type: ignore[arg-type]
-        await controller._handle_update(self._message_update(1, 101, "first task"))
-        await controller._handle_update(self._message_update(2, 202, "second task"))
-        await controller._handle_update(self._message_update(3, 303, "ignored"))
+        await dispatch_controller_update(controller, self._message_update(1, 101, "first task"))
+        await dispatch_controller_update(controller, self._message_update(2, 202, "second task"))
+        await dispatch_controller_update(controller, self._message_update(3, 303, "ignored"))
 
         self.assertEqual(sessions[101].messages, ["first task"])
         self.assertEqual(sessions[202].messages, ["second task"])
@@ -376,9 +377,9 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             message_id=9,
             chat_id=101,
         )
-        await controller._handle_update(self._callback_update(4, 202, "approval-token", "once"))
+        await dispatch_controller_update(controller, self._callback_update(4, 202, "approval-token", "once"))
         self.assertFalse(future.done())
-        await controller._handle_update(self._callback_update(5, 101, "approval-token", "once"))
+        await dispatch_controller_update(controller, self._callback_update(5, 101, "approval-token", "once"))
         self.assertEqual(await future, "accept")
 
         await controller.close()
@@ -405,7 +406,7 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             lambda _user_id, _controller: FailingCodex(),
         )  # type: ignore[arg-type]
 
-        await controller._handle_update(self._message_update(1, 101, "task"))
+        await dispatch_controller_update(controller, self._message_update(1, 101, "task"))
 
         self.assertTrue(
             any(
@@ -447,20 +448,20 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
                 make_session,
                 state_store=state_store,
             )  # type: ignore[arg-type]
-            await controller._handle_update(self._group_message_update(1, -100900, 303, "/group_add"))
+            await dispatch_controller_update(controller, self._group_message_update(1, -100900, 303, "/group_add"))
             self.assertFalse(state_store.is_group_attached(-100900))
             self.assertEqual(telegram.messages, [])
 
-            await controller._handle_update(self._group_message_update(2, -100900, 101, "/group_add", "Dev team"))
+            await dispatch_controller_update(controller, self._group_message_update(2, -100900, 101, "/group_add", "Dev team"))
             self.assertFalse(state_store.is_group_attached(-100900))
             self.assertEqual(state_store.pending_group_setup_user(-100900), 101)
             self.assertEqual(telegram.messages[-1][1], _catalog_text("groups.label.setup_prompt"))
-            await controller._handle_update(self._group_message_update(25, -100900, 101, "several words, bad!"))
+            await dispatch_controller_update(controller, self._group_message_update(25, -100900, 101, "several words, bad!"))
             self.assertFalse(state_store.is_group_attached(-100900))
             self.assertEqual(state_store.pending_group_setup_user(-100900), 101)
-            await controller._handle_update(self._group_message_update(3, -100900, 202, "other, list"))
+            await dispatch_controller_update(controller, self._group_message_update(3, -100900, 202, "other, list"))
             self.assertFalse(state_store.is_group_attached(-100900))
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(
                     4,
                     -100900,
@@ -471,21 +472,21 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_store.is_group_attached(-100900))
             codex_triggers = (CODEX_TRIGGER_CYRILLIC, KAWAII_TRIGGER_CYRILLIC)
             self.assertEqual(state_store.group_trigger_words(-100900), codex_triggers)
-            await controller._handle_update(self._group_message_update(5, -100900, 101, "plain text is ignored"))
-            await controller._handle_update(
+            await dispatch_controller_update(controller, self._group_message_update(5, -100900, 101, "plain text is ignored"))
+            await dispatch_controller_update(controller,
                 self._group_message_update(6, -100900, 101, f"{CODEX_TRIGGER_CYRILLIC.upper()}, first task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(7, -100900, 202, f"{KAWAII_TRIGGER_CYRILLIC} second task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(8, -100900, 202, f"{KAWAII_TRIGGER_CYRILLIC}ny third task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(9, -100900, 303, f"{CODEX_TRIGGER_CYRILLIC} ignored")
             )
-            await controller._handle_update(self._message_update(10, 101, "private task"))
-            await controller._handle_update(
+            await dispatch_controller_update(controller, self._message_update(10, 101, "private task"))
+            await dispatch_controller_update(controller,
                 self._group_message_update(26, -100900, 101, CODEX_TRIGGER_CYRILLIC.upper())
             )
             self.assertEqual(telegram.messages[-1][1], _catalog_text("groups.label.trigger_empty"))
@@ -494,21 +495,21 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sessions[101].messages, ["private task"])
             self.assertNotIn(303, sessions)
 
-            await controller._handle_update(self._group_message_update(11, -100900, 202, "/group_add"))
+            await dispatch_controller_update(controller, self._group_message_update(11, -100900, 202, "/group_add"))
             self.assertTrue(state_store.is_group_attached(-100900))
             self.assertEqual(state_store.group_trigger_words(-100900), codex_triggers)
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(12, -100900, 101, f"{KAWAII_TRIGGER_CYRILLIC} old list still works")
             )
             helper_triggers = (BOT_TRIGGER_CYRILLIC, HELPER_TRIGGER_CYRILLIC)
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(13, -100900, 202, ", ".join(helper_triggers))
             )
             self.assertEqual(state_store.group_trigger_words(-100900), helper_triggers)
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(14, -100900, 101, f"{CODEX_TRIGGER_CYRILLIC} old list stopped")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(15, -100900, 202, f"{BOT_TRIGGER_CYRILLIC.capitalize()}: next task")
             )
             self.assertEqual(
@@ -516,12 +517,12 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
                 ["first task", "second task", "old list still works", "next task"],
             )
 
-            await controller._handle_update(self._group_message_update(16, -100900, 202, "/mode"))
+            await dispatch_controller_update(controller, self._group_message_update(16, -100900, 202, "/mode"))
             group_controller = controller.groups[-100900]
             self.assertEqual(group_controller._output_mode(), "answers")
             picker = group_controller.mode_picker
             self.assertIsNotNone(picker)
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_callback_update(
                     17,
                     -100900,
@@ -531,7 +532,7 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             self.assertEqual(group_controller._output_mode(), "answers")
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_callback_update(
                     18,
                     -100900,
@@ -560,14 +561,14 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("one.txt", sessions[-100900].messages[-1])
             self.assertIn("two.txt", sessions[-100900].messages[-1])
 
-            await controller._handle_update(self._group_message_update(21, -100900, 101, "/group_remove"))
+            await dispatch_controller_update(controller, self._group_message_update(21, -100900, 101, "/group_remove"))
             self.assertFalse(state_store.is_group_attached(-100900))
             self.assertTrue(sessions[-100900].closed)
-            await controller._handle_update(self._group_message_update(22, -100900, 202, "after detach"))
+            await dispatch_controller_update(controller, self._group_message_update(22, -100900, 202, "after detach"))
             self.assertEqual(len(sessions[-100900].messages), 5)
-            await controller._handle_update(self._group_message_update(23, -100900, 202, "/group_add"))
+            await dispatch_controller_update(controller, self._group_message_update(23, -100900, 202, "/group_add"))
             self.assertEqual(state_store.pending_group_setup_user(-100900), 202)
-            await controller._handle_update(self._group_message_update(24, -100900, 101, "/group_remove"))
+            await dispatch_controller_update(controller, self._group_message_update(24, -100900, 101, "/group_remove"))
             self.assertIsNone(state_store.pending_group_setup_user(-100900))
             self.assertFalse(state_store.is_group_attached(-100900))
             await controller.close()
@@ -602,20 +603,20 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
                 make_session,
                 state_store=state_store,
             )  # type: ignore[arg-type]
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(1, -100920, 101, "/group_add", "Work chat")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(2, -100920, 101, CODEX_TRIGGER_CYRILLIC)
             )
 
             self.assertFalse(state_store.group_all_messages_to_codex(-100920))
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(3, -100920, 101, "small talk stays in Telegram")
             )
             self.assertEqual(sessions[-100920].messages, [])
 
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(4, -100920, 101, "/group_mode")
             )
             group_controller = controller.groups[-100920]
@@ -625,29 +626,29 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
             mode_markup = telegram.reply_markups[-1]
             all_callback = mode_markup["inline_keyboard"][1][0]["callback_data"]
 
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_callback_update(5, -100920, 303, picker.message_id, all_callback)
             )
             self.assertFalse(state_store.group_all_messages_to_codex(-100920))
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_callback_update(6, -100920, 202, picker.message_id, all_callback)
             )
             self.assertTrue(state_store.group_all_messages_to_codex(-100920))
             self.assertTrue(RuntimeStateStore(database).group_all_messages_to_codex(-100920))
 
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(7, -100920, 101, "first ordinary task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(8, -100920, 202, "second ordinary task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(9, -100920, 303, "not on the allowlist")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(10, -100920, 101, f"{CODEX_TRIGGER_CYRILLIC}, stripped trigger")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(11, -100920, 101, "/status")
             )
 
@@ -659,14 +660,14 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
 
             reply_callback = telegram.edit_markups[-1]
             stop_all_callback = reply_callback["inline_keyboard"][0][0]["callback_data"]
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_callback_update(12, -100920, 101, picker.message_id, stop_all_callback)
             )
             self.assertFalse(state_store.group_all_messages_to_codex(-100920))
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(13, -100920, 101, "ordinary message again ignored")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(14, -100920, 101, f"{CODEX_TRIGGER_CYRILLIC} trigger still works")
             )
             self.assertEqual(
@@ -755,16 +756,16 @@ class MultiUserRoutingTests(unittest.IsolatedAsyncioTestCase):
                 state_store=state_store,
             )  # type: ignore[arg-type]
 
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(1, -100910, 101, "codex allowed task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(2, -100910, 303, "codex ignored task")
             )
-            await controller._handle_update(
+            await dispatch_controller_update(controller,
                 self._group_message_update(3, -100910, 303, "/add_user 303")
             )
-            await controller._handle_update(self._message_update(4, 303, "private attempt"))
+            await dispatch_controller_update(controller, self._message_update(4, 303, "private attempt"))
             self.assertEqual(sessions[-100910].messages, ["allowed task"])
             self.assertEqual(set(sessions), {-100910})
             self.assertFalse(state_store.is_group_attached(-100911))

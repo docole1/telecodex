@@ -6,7 +6,6 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from aiogram.types import CallbackQuery, Message
 
 from telecodex.codex.mcp import (
     McpServer,
@@ -29,7 +28,7 @@ from telecodex.telegram.pagination import (
     two_column_rows,
 )
 from telecodex.telegram.pickers import McpAddWizard, McpPicker
-from telecodex.telegram.updates import parse_command
+from telecodex.telegram.updates import TelegramCallbackContext, TelegramMessageContext, parse_command
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +447,7 @@ class McpTelegramMixin:
             )
         return self._text("mcp.label.confirm_add", name=wizard.name, detail=detail)
 
-    async def _consume_mcp_dialog_input(self, incoming: Message) -> bool:
+    async def _consume_mcp_dialog_input(self, incoming: TelegramMessageContext) -> bool:
         parsed = parse_command(incoming.text) if not incoming.attachments else None
         if parsed is not None and parsed[0] in {"stop", "status"}:
             return False
@@ -475,7 +474,7 @@ class McpTelegramMixin:
             return True
         return False
 
-    async def _handle_mcp_wizard_input(self, incoming: Message, wizard: McpAddWizard) -> None:
+    async def _handle_mcp_wizard_input(self, incoming: TelegramMessageContext, wizard: McpAddWizard) -> None:
         value = incoming.text.strip()
         if value.casefold() in {"/cancel", "cancel", "отмена"}:
             await self._cancel_mcp_wizard()
@@ -550,7 +549,7 @@ class McpTelegramMixin:
             picker.confirming_remove = False
             await self._refresh_mcp_picker(picker)
 
-    async def _handle_mcp_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
+    async def _handle_mcp_callback(self, incoming: TelegramCallbackContext, parts: list[str]) -> None:
         picker = self.mcp_picker
         if picker is None or len(parts) < 3 or parts[1] != picker.token or incoming.message_id != picker.message_id:
             await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
@@ -813,7 +812,7 @@ class McpTelegramMixin:
 
     async def _handle_mcp_form_input(
         self,
-        incoming: Message,
+        incoming: TelegramMessageContext,
         pending: PendingMcpElicitation,
     ) -> None:
         await self.mcp_elicitation._handle_mcp_form_input(incoming, pending)
@@ -828,7 +827,7 @@ class McpTelegramMixin:
 
     async def _handle_mcp_elicitation_callback(
         self,
-        incoming: CallbackQuery,
+        incoming: TelegramCallbackContext,
         parts: list[str],
     ) -> None:
         await self.mcp_elicitation._handle_mcp_elicitation_callback(incoming, parts)

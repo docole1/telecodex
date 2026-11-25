@@ -13,6 +13,7 @@ from telecodex.telegram.updates import parse_update
 from telecodex.telegram.user_controller import TelegramUserController
 
 from multi_user_test_support import (
+    dispatch_user_update,
     callback_event,
     message_event,
     CODEX_TRIGGER_CYRILLIC,
@@ -43,7 +44,7 @@ class TelegramAudioParsingTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, Message)
+        self.assertIsInstance(incoming.event, Message)  # type: ignore[union-attr]
         self.assertEqual(incoming.attachments[0].kind, "voice")  # type: ignore[union-attr]
         self.assertEqual(incoming.attachments[0].duration_seconds, 12)  # type: ignore[union-attr]
         self.assertEqual(incoming.attachments[0].file_name, "voice.ogg")  # type: ignore[union-attr]
@@ -66,7 +67,7 @@ class TelegramAudioParsingTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, Message)
+        self.assertIsInstance(incoming.event, Message)  # type: ignore[union-attr]
         self.assertEqual(incoming.attachments[0].kind, "audio")  # type: ignore[union-attr]
 
 
@@ -182,7 +183,7 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
             transcriber = FakeAudioTranscriber("check configuration")
             controller, telegram, codex = self._controller(workspace, transcriber)
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(
                     1,
                     22,
@@ -207,7 +208,7 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
             transcriber = FakeAudioTranscriber("must not be transcribed")
             controller, telegram, codex = self._controller(workspace, transcriber)
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(
                     1,
                     22,
@@ -230,7 +231,7 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
             transcriber = FakeAudioTranscriber(transcript)
             controller, telegram, codex = self._controller(workspace, transcriber, is_group=True)
 
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(
                     1,
                     23,
@@ -255,7 +256,7 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
                 quiet_transcriber,
                 is_group=True,
             )
-            await quiet_controller._handle_message(
+            await dispatch_user_update(quiet_controller,
                 message_event(
                     2,
                     24,
@@ -276,7 +277,7 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller, _telegram, codex = self._controller(
                 Path(temp_dir), FakeAudioTranscriber(), is_group=True
             )
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(
                     1,
                     22,
@@ -294,7 +295,7 @@ class AudioMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller, _telegram, codex = self._controller(
                 Path(temp_dir), FakeAudioTranscriber(), is_group=True
             )
-            await controller._handle_message(
+            await dispatch_user_update(controller,
                 message_event(1, 22, 101, -100900, "supergroup", "ordinary text")
             )
             self.assertEqual(codex.messages, [])
