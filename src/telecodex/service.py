@@ -22,6 +22,11 @@ from telecodex.telegram.routers import TelegramUpdateRouters
 from telecodex.telegram.polling import PollingRequestMiddleware, TelegramUpdateMiddleware
 from telecodex.telegram.user_controller import TelegramUserController
 from telecodex.telegram.media_groups import TelegramMediaGroupBuffer
+from telecodex.update_checker import (
+    UPDATE_CHECK_INTERVAL_SECONDS,
+    GitHubRelease,
+    check_for_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,7 @@ class TeleCodexService:
             self._note_recovery_heartbeat,
         )
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._update_check_task: asyncio.Task[None] | None = None
 
     def _create_user_session(self, user_id: int, controller: TelegramUserController) -> CodexSession:
         state_store = (
@@ -111,6 +117,11 @@ class TeleCodexService:
             self._running = False
             logger.info("TeleCodex service stopping", extra={"event": "telecodex.service.stopping"})
             await self._recovery_supervisor.close()
+            update_check_task = self._update_check_task
+            self._update_check_task = None
+            if update_check_task is not None and not update_check_task.done():
+                update_check_task.cancel()
+                await asyncio.gather(update_check_task, return_exceptions=True)
             watchdog_task = self._watchdog_task
             self._watchdog_task = None
             if watchdog_task is not None and not watchdog_task.done():
@@ -153,6 +164,7 @@ class TeleCodexService:
         self._poll_heartbeat_at = monotonic()
         self._recovery_supervisor.start()
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        self._update_check_task = asyncio.create_task(self._update_check_loop())
         logger.info("TeleCodex service started", extra={"event": "telecodex.service.started"})
         self._notifier.ready("TeleCodex is polling Telegram with Aiogram")
 
@@ -219,6 +231,72 @@ class TeleCodexService:
                     },
                 )
                 self._watchdog_degraded = True
+
+    async def _update_check_loop(self) -> None:
+        while self._running:
+            try:
+                release = await asyncio.to_thread(check_for_update)
+                if release is not None:
+                    await self._notify_update_available(release)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log_exception(
+                    logger,
+                    "Could not check for a newer TeleCodex release",
+                    exc,
+                    event="telecodex.update_check.failed",
+                    level=logging.WARNING,
+                )
+            await asyncio.sleep(UPDATE_CHECK_INTERVAL_SECONDS)
+
+    async def _notify_update_available(self, release: GitHubRelease) -> None:
+        for user_id in self.config.telegram_allowed_user_ids:
+            metadata_key = f"update_release_notified:{user_id}"
+            try:
+                if self.state_store.load_service_metadata(metadata_key) == release.tag_name:
+                    continue
+                language = self.state_store.for_user(user_id).load().language
+                message = self.texts.render(
+                    language,
+                    "updates.label.available",
+                    version=release.version,
+                    release_url=release.html_url,
+                )
+                await self.telegram.send_message(user_id, message)
+            except Exception as exc:
+                log_exception(
+                    logger,
+                    "Could not send a TeleCodex update notice to an operator",
+                    exc,
+                    event="telecodex.update_notice.delivery_failed",
+                    level=logging.WARNING,
+                    context_hash=log_identifier(user_id, namespace="telegram-user"),
+                    version=release.version,
+                )
+                continue
+
+            try:
+                self.state_store.save_service_metadata(metadata_key, release.tag_name)
+            except Exception as exc:
+                log_exception(
+                    logger,
+                    "Could not record a delivered TeleCodex update notice",
+                    exc,
+                    event="telecodex.update_notice.persistence_failed",
+                    level=logging.WARNING,
+                    context_hash=log_identifier(user_id, namespace="telegram-user"),
+                    version=release.version,
+                )
+            else:
+                logger.info(
+                    "TeleCodex update notice sent to an operator",
+                    extra={
+                        "event": "telecodex.update_notice.sent",
+                        "context_hash": log_identifier(user_id, namespace="telegram-user"),
+                        "version": release.version,
+                    },
+                )
 
     async def _report_media_group_error(
         self,

@@ -189,6 +189,7 @@ class TeleCodexAiogramPollingTests(unittest.IsolatedAsyncioTestCase):
         service.telegram = bot
         service._recovery_supervisor = SimpleNamespace(close=AsyncMock())
         service._watchdog_task = None
+        service._update_check_task = None
         service.media_groups = SimpleNamespace(close=AsyncMock())
         service.controller = SimpleNamespace(close=AsyncMock())
         service._running = True

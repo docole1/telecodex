@@ -238,6 +238,12 @@ class RuntimeStateStore:
             raise ValueError("Runtime state has an invalid last_update_id")
         self._update_data(lambda data: data.__setitem__("last_update_id", last_update_id))
 
+    def load_service_metadata(self, key: str) -> str | None:
+        return self._backend.load_service_metadata(key)
+
+    def save_service_metadata(self, key: str, value: str) -> None:
+        self._backend.save_service_metadata(key, value)
+
     def load_pending_media_groups(self) -> dict[str, list[dict[str, Any]]]:
         return self._load_data()["pending_media_groups"]
 

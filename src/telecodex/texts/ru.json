@@ -117,6 +117,11 @@
       "rate_limit_no_reset": "{remaining}% осталось"
     }
   },
+  "updates": {
+    "label": {
+      "available": "<strong>Доступна новая версия TeleCodex {version}.</strong>\n{release_url}\nУстанови её вручную и перезапусти бота."
+    }
+  },
   "detailed_log": {
     "label": {
       "command_running": "Codex выполняет команду в проекте...",

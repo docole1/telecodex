@@ -21,6 +21,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
     @staticmethod
     def _downgrade_v3_database(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE service_metadata")
         connection.execute("ALTER TABLE group_contexts DROP COLUMN all_messages_to_codex")
         for table in ("user_contexts", "group_contexts"):
             for column in (
@@ -96,7 +97,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
             self.assertFalse(reopened.for_user(101).load().quiet_progress)
             self.assertFalse(reopened.for_group(-100990).load().quiet_progress)
             with sqlite3.connect(database_path) as connection:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
             user = reopened.for_user(101).load()
@@ -119,6 +120,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
             store.for_group(-100991).save(RuntimeState(thread_id="v4-thread"))
 
             with sqlite3.connect(database_path) as connection:
+                connection.execute("DROP TABLE service_metadata")
                 connection.execute("ALTER TABLE group_contexts DROP COLUMN all_messages_to_codex")
                 connection.execute("ALTER TABLE user_contexts DROP COLUMN quiet_progress")
                 connection.execute("ALTER TABLE group_contexts DROP COLUMN quiet_progress")
@@ -132,7 +134,7 @@ class SQLiteStateMigrationTests(unittest.TestCase):
             reopened = RuntimeStateStore(database_path)
             self.assertTrue(reopened.group_all_messages_to_codex(-100991))
             with sqlite3.connect(database_path) as connection:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
 
     def test_group_message_mode_survives_detach_and_reattach(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

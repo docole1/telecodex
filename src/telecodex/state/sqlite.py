@@ -8,13 +8,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _APPLICATION_ID = 0x54434F44  # "TCOD"
 
 _SCHEMA = """
 CREATE TABLE service_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     last_update_id INTEGER NOT NULL CHECK (last_update_id >= 0)
+);
+
+CREATE TABLE service_metadata (
+    metadata_key TEXT PRIMARY KEY CHECK (length(metadata_key) > 0),
+    metadata_value TEXT NOT NULL CHECK (length(metadata_value) > 0)
 );
 
 CREATE TABLE threads (
@@ -158,6 +163,41 @@ class SQLiteStateBackend:
             connection.close()
             self._secure_sidecars()
 
+    def load_service_metadata(self, key: str) -> str | None:
+        if not isinstance(key, str) or not key:
+            raise ValueError("Runtime service metadata key must be a non-empty string")
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT metadata_value FROM service_metadata WHERE metadata_key = ?",
+                (key,),
+            ).fetchone()
+            return row[0] if row is not None else None
+        finally:
+            connection.close()
+            self._secure_sidecars()
+
+    def save_service_metadata(self, key: str, value: str) -> None:
+        if not isinstance(key, str) or not key:
+            raise ValueError("Runtime service metadata key must be a non-empty string")
+        if not isinstance(value, str) or not value:
+            raise ValueError("Runtime service metadata value must be a non-empty string")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO service_metadata(metadata_key, metadata_value) VALUES (?, ?) "
+                "ON CONFLICT(metadata_key) DO UPDATE SET metadata_value = excluded.metadata_value",
+                (key, value),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+            self._secure_sidecars()
+
     def _migrate_existing_database(self) -> None:
         connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         try:
@@ -177,6 +217,9 @@ class SQLiteStateBackend:
                 version = 5
             if version == 5:
                 self._migrate_v5_to_v6(connection)
+                version = 6
+            if version == 6:
+                self._migrate_v6_to_v7(connection)
         except Exception:
             connection.rollback()
             raise
@@ -220,6 +263,17 @@ class SQLiteStateBackend:
                 "NOT NULL DEFAULT 0 CHECK (quiet_progress IN (0, 1))"
             )
         connection.execute("PRAGMA user_version = 6")
+        connection.commit()
+
+    def _migrate_v6_to_v7(self, connection: sqlite3.Connection) -> None:
+        self._create_pre_migration_backup(6)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "CREATE TABLE service_metadata ("
+            "metadata_key TEXT PRIMARY KEY CHECK (length(metadata_key) > 0), "
+            "metadata_value TEXT NOT NULL CHECK (length(metadata_value) > 0))"
+        )
+        connection.execute("PRAGMA user_version = 7")
         connection.commit()
 
     def _create_pre_migration_backup(self, schema_version: int) -> None:
@@ -321,6 +375,7 @@ class SQLiteStateBackend:
             }
             required = {
                 "service_state",
+                "service_metadata",
                 "threads",
                 "thread_token_usage",
                 "user_contexts",

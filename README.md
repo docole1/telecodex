@@ -55,6 +55,18 @@ Start the bot in the foreground:
 .venv/bin/telecodex run
 ```
 
+## Updating
+
+When TeleCodex reports a new release, review its release notes. From the repository directory, install that release and restart the bot:
+
+```bash
+git fetch --tags
+git checkout vX.Y.Z
+.venv/bin/pip install -e .
+```
+
+Replace `vX.Y.Z` with the release tag, then restart TeleCodex using the same method you use to run it.
+
 ## First steps in Telegram
 
 1. Open a private chat with your bot and send `/new`.
