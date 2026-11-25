@@ -294,5 +294,4 @@ def configure_logging() -> None:
     root.setLevel(level)
 
     # Telegram's Bot API embeds the bot token in request URLs.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp.client").setLevel(logging.WARNING)

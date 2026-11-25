@@ -51,10 +51,22 @@ def normalize_stored_trigger_words(value: Any) -> tuple[str, ...]:
 
 def strip_group_trigger(text: str, trigger_words: Sequence[str]) -> str | None:
     """Return the message without a matching first-word trigger, or None."""
+    result = strip_group_trigger_with_offset(text, trigger_words)
+    return result[0] if result is not None else None
+
+
+def strip_group_trigger_with_offset(
+    text: str,
+    trigger_words: Sequence[str],
+) -> tuple[str, int] | None:
+    """Return the remaining text and its starting character offset."""
     if not text or not trigger_words:
         return None
     alternatives = "|".join(re.escape(word) for word in sorted(trigger_words, key=len, reverse=True))
     match = re.match(rf"^\s*(?:{alternatives})(?=$|[^\w])", text, re.IGNORECASE | re.UNICODE)
     if match is None:
         return None
-    return text[match.end() :].lstrip(" \t\r\n,.:;!?—–-")
+    start = match.end()
+    while start < len(text) and text[start] in " \t\r\n,.:;!?—–-":
+        start += 1
+    return text[start:], start

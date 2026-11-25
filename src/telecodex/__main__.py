@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import signal
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,16 +31,7 @@ def _parser() -> argparse.ArgumentParser:
 async def _run_service() -> None:
     config = load_config()
     service = TeleCodexService(config)
-    task = asyncio.create_task(service.run())
-    loop = asyncio.get_running_loop()
-    try:
-        loop.add_signal_handler(signal.SIGTERM, task.cancel)
-    except (NotImplementedError, RuntimeError):
-        pass
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    await service.run()
 
 
 def main() -> None:

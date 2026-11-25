@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aiogram.types import Update
+
 from telecodex.documents.models import TelegramAttachment
 from telecodex.documents.processor import AUDIO_EXTENSIONS
+from telecodex.telegram.markdown_input import slice_entities, to_model_markdown, to_model_markdown_slice
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,41 @@ class IncomingMessage:
     group_trigger_checked: bool = False
     group_trigger_required: bool = False
     reply_to_user_id: int | None = None
+    model_text: str | None = None
+    entities: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def prompt_text(self) -> str:
+        return self.model_text if self.model_text is not None else to_model_markdown(self.text, self.entities)
+
+    def without_prefix(self, prefix_length: int) -> IncomingMessage:
+        text, entities = slice_entities(self.text, self.entities, prefix_length)
+        return IncomingMessage(
+            update_id=self.update_id,
+            message_id=self.message_id,
+            user_id=self.user_id,
+            chat_id=self.chat_id,
+            chat_type=self.chat_type,
+            text=text,
+            attachments=self.attachments,
+            media_group_id=self.media_group_id,
+            chat_title=self.chat_title,
+            group_trigger_checked=self.group_trigger_checked,
+            group_trigger_required=self.group_trigger_required,
+            reply_to_user_id=self.reply_to_user_id,
+            model_text=to_model_markdown(text, entities),
+            entities=entities,
+        )
+
+    def command_argument_markdown(self) -> str:
+        _command, separator, _argument = self.text.partition(" ")
+        if not separator:
+            return ""
+        start = len(_command) + 1
+        end = len(self.text.rstrip())
+        while start < end and self.text[start].isspace():
+            start += 1
+        return to_model_markdown_slice(self.text, self.entities, start, end)
 
 
 @dataclass(frozen=True)
@@ -39,7 +77,11 @@ class IncomingCallback:
 IncomingUpdate = IncomingMessage | IncomingCallback
 
 
-def parse_update(update: dict[str, Any]) -> IncomingUpdate | None:
+def parse_update(
+    update: dict[str, Any],
+    *,
+    model_text: str | None = None,
+) -> IncomingUpdate | None:
     update_id = update.get("update_id")
     if not isinstance(update_id, int):
         return None
@@ -49,6 +91,7 @@ def parse_update(update: dict[str, Any]) -> IncomingUpdate | None:
         user = message.get("from", {})
         chat = message.get("chat", {})
         text = message.get("text")
+        entities_value = message.get("entities")
         user_id = user.get("id") if isinstance(user, dict) else None
         chat_id = chat.get("id") if isinstance(chat, dict) else None
         message_id = message.get("message_id")
@@ -61,6 +104,12 @@ def parse_update(update: dict[str, Any]) -> IncomingUpdate | None:
         caption = message.get("caption")
         if not isinstance(text, str):
             text = caption if isinstance(caption, str) else ""
+            entities_value = message.get("caption_entities")
+        entities = tuple(
+            dict(entity)
+            for entity in entities_value
+            if isinstance(entity, dict)
+        ) if isinstance(entities_value, list) else ()
         media_group_id = message.get("media_group_id")
         if not isinstance(media_group_id, str):
             media_group_id = None
@@ -81,6 +130,8 @@ def parse_update(update: dict[str, Any]) -> IncomingUpdate | None:
                 False,
                 False,
                 reply_to_user_id if isinstance(reply_to_user_id, int) else None,
+                model_text if model_text is not None else to_model_markdown(text, entities),
+                entities,
             )
         return None
 
@@ -103,6 +154,21 @@ def parse_update(update: dict[str, Any]) -> IncomingUpdate | None:
         ):
             return IncomingCallback(update_id, callback_id, user_id, chat_id, message_id, data)
     return None
+
+
+def parse_aiogram_update(
+    update: Update,
+    *,
+    model_text: str | None = None,
+) -> IncomingUpdate | None:
+    """Adapt an Aiogram update to TeleCodex's framework-neutral DTOs."""
+    raw_update = aiogram_update_to_dict(update)
+    return parse_update(raw_update, model_text=model_text)
+
+
+def aiogram_update_to_dict(update: Update) -> dict[str, Any]:
+    """Serialize a typed update into Bot API JSON-compatible fields."""
+    return update.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def parse_command(text: str) -> tuple[str, str] | None:

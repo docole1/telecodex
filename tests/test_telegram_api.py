@@ -1,123 +1,206 @@
 from __future__ import annotations
-from unittest.mock import AsyncMock, patch
+
+import asyncio
+import stat
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import EditMessageText, SendMessage, SendRichMessage
+from aiogram.types import ReplyParameters
+from python_socks import ProxyType
+
 from telecodex.config import ProxySettings
 from telecodex.i18n import TextCatalog
 from telecodex.telegram.api import TelegramAPI, TelegramApiError
 from telecodex.telegram.pagination import two_column_rows
 from telecodex.telegram.user_controller import TelegramUserController
 
-class TelegramRichMessageTests(unittest.IsolatedAsyncioTestCase):
-    async def test_send_rich_message_passes_markdown_and_reply_metadata(self) -> None:
-        api = TelegramAPI("bot-token")
-        try:
-            with patch.object(api, "call", new_callable=AsyncMock) as call:
-                call.return_value = {"message_id": 12}
-                result = await api.send_rich_message(
-                    101,
-                    "# Result\n\n**Done**",
-                    reply_to_message_id=55,
-                    disable_notification=True,
-                )
 
-            self.assertEqual(result, {"message_id": 12})
-            method, payload = call.await_args.args
-            self.assertEqual(method, "sendRichMessage")
-            self.assertEqual(payload["rich_message"], {"markdown": "# Result\n\n**Done**"})
-            self.assertEqual(
-                payload["reply_parameters"],
-                {"message_id": 55, "allow_sending_without_reply": True},
+BOT_TOKEN = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+
+
+class TelegramRichMessageTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.api = TelegramAPI(BOT_TOKEN)
+
+    async def asyncTearDown(self) -> None:
+        await self.api.close()
+
+    async def test_send_rich_message_passes_markdown_and_reply_metadata(self) -> None:
+        with patch.object(self.api.bot, "send_rich_message", new_callable=AsyncMock) as send:
+            send.return_value = {"message_id": 12}
+            result = await self.api.send_rich_message(
+                101,
+                "# Result\n\n**Done**",
+                reply_to_message_id=55,
+                disable_notification=True,
             )
-            self.assertTrue(payload["disable_notification"])
-        finally:
-            await api.close()
+
+        self.assertEqual(result, {"message_id": 12})
+        payload = send.await_args.kwargs
+        self.assertEqual(payload["rich_message"], {"markdown": "# Result\n\n**Done**"})
+        self.assertEqual(payload["reply_parameters"].message_id, 55)
+        self.assertTrue(payload["reply_parameters"].allow_sending_without_reply)
+        self.assertTrue(payload["disable_notification"])
 
     async def test_rich_format_rejection_falls_back_to_plain_send_message(self) -> None:
-        api = TelegramAPI("bot-token")
-        rejection = TelegramApiError(
-            "Telegram API sendRichMessage failed: Bad Request: can't parse markdown",
-            method="sendRichMessage",
-            error_code=400,
-            http_status=400,
+        rejection = TelegramBadRequest(
+            method=SendRichMessage(chat_id=101, rich_message={"markdown": "invalid"}),
+            message="can't parse markdown",
         )
-        try:
-            with patch.object(api, "call", new_callable=AsyncMock) as call:
-                call.side_effect = [rejection, {"message_id": 13}]
-                result = await api.send_rich_message(101, "Unparsed **text**")
+        with (
+            patch.object(self.api.bot, "send_rich_message", new_callable=AsyncMock) as rich,
+            patch.object(self.api.bot, "send_message", new_callable=AsyncMock) as plain,
+        ):
+            rich.side_effect = rejection
+            plain.return_value = {"message_id": 13}
+            result = await self.api.send_rich_message(101, "Unparsed **text**")
 
-            self.assertEqual(result, {"message_id": 13})
-            self.assertEqual(
-                [call.await_args_list[index].args[0] for index in range(2)],
-                ["sendRichMessage", "sendMessage"],
-            )
-            self.assertEqual(call.await_args_list[1].args[1]["text"], "Unparsed **text**")
-            self.assertNotIn("parse_mode", call.await_args_list[1].args[1])
-        finally:
-            await api.close()
+        self.assertEqual(result, {"message_id": 13})
+        plain_payload = plain.await_args.kwargs
+        self.assertEqual(plain_payload["text"], "Unparsed **text**")
+        self.assertIsNone(plain_payload["parse_mode"])
+        self.assertEqual(rich.await_count, 1)
 
     async def test_non_format_rich_rejection_does_not_retry(self) -> None:
-        api = TelegramAPI("bot-token")
-        rejection = TelegramApiError(
-            "Telegram API sendRichMessage failed: Bad Request: chat not found",
-            method="sendRichMessage",
-            error_code=400,
-            http_status=400,
+        rejection = TelegramBadRequest(
+            method=SendRichMessage(chat_id=101, rich_message={"markdown": "text"}),
+            message="chat not found",
         )
-        try:
-            with patch.object(api, "call", new_callable=AsyncMock) as call:
-                call.side_effect = rejection
-                with self.assertRaises(TelegramApiError):
-                    await api.send_rich_message(101, "No chat")
-            call.assert_awaited_once()
-        finally:
-            await api.close()
+        with (
+            patch.object(self.api.bot, "send_rich_message", new_callable=AsyncMock) as rich,
+            patch.object(self.api.bot, "send_message", new_callable=AsyncMock) as plain,
+        ):
+            rich.side_effect = rejection
+            with self.assertRaises(TelegramApiError):
+                await self.api.send_rich_message(101, "No chat")
+            plain.assert_not_awaited()
 
 
 class TelegramHtmlMessageTests(unittest.IsolatedAsyncioTestCase):
-    async def test_send_message_uses_html_and_keeps_explicit_entities(self) -> None:
-        api = TelegramAPI("bot-token")
-        try:
-            with patch.object(api, "call", new_callable=AsyncMock) as call:
-                call.return_value = {"message_id": 21}
-                await api.send_message(101, "<strong>Ready</strong>")
-                await api.send_message(
-                    101,
-                    "output",
-                    entities=[{"type": "pre", "offset": 0, "length": 6}],
-                )
+    async def asyncSetUp(self) -> None:
+        self.api = TelegramAPI(BOT_TOKEN)
 
-            self.assertEqual(call.await_args_list[0].args[0], "sendMessage")
-            self.assertEqual(call.await_args_list[0].args[1]["parse_mode"], "HTML")
-            entity_payload = call.await_args_list[1].args[1]
-            self.assertEqual(entity_payload["entities"], [{"type": "pre", "offset": 0, "length": 6}])
-            self.assertNotIn("parse_mode", entity_payload)
-        finally:
-            await api.close()
+    async def asyncTearDown(self) -> None:
+        await self.api.close()
+
+    async def test_send_message_uses_html_and_keeps_explicit_entities(self) -> None:
+        with patch.object(self.api.bot, "send_message", new_callable=AsyncMock) as send:
+            send.return_value = {"message_id": 21}
+            await self.api.send_message(101, "<strong>Ready</strong>")
+            await self.api.send_message(
+                101,
+                "output",
+                entities=[{"type": "pre", "offset": 0, "length": 6}],
+            )
+
+        first, second = [call.kwargs for call in send.await_args_list]
+        self.assertEqual(first["parse_mode"], "HTML")
+        self.assertEqual(second["entities"], [{"type": "pre", "offset": 0, "length": 6}])
+        self.assertIsNone(second["parse_mode"])
 
     async def test_html_format_rejection_retries_plain_text_for_send_and_edit(self) -> None:
-        api = TelegramAPI("bot-token")
-        send_rejection = TelegramApiError(
-            "Telegram API sendMessage failed: Bad Request: can't parse entities",
-            method="sendMessage",
-            error_code=400,
+        send_rejection = TelegramBadRequest(
+            method=SendMessage(chat_id=101, text="<strong>bad markup</strong>"),
+            message="can't parse entities",
         )
-        edit_rejection = TelegramApiError(
-            "Telegram API editMessageText failed: Bad Request: can't parse entities: Unsupported start tag",
-            method="editMessageText",
-            error_code=400,
+        edit_rejection = TelegramBadRequest(
+            method=EditMessageText(chat_id=101, message_id=22, text="<strong>bad markup</strong>"),
+            message="can't parse entities: Unsupported start tag",
         )
-        try:
-            with patch.object(api, "call", new_callable=AsyncMock) as call:
-                call.side_effect = [send_rejection, {"message_id": 22}, edit_rejection, True]
-                await api.send_message(101, "<strong>bad markup</strong>")
-                await api.edit_message(101, 22, "<strong>bad markup</strong>")
+        with (
+            patch.object(self.api.bot, "send_message", new_callable=AsyncMock) as send,
+            patch.object(self.api.bot, "edit_message_text", new_callable=AsyncMock) as edit,
+        ):
+            send.side_effect = [send_rejection, {"message_id": 22}]
+            edit.side_effect = [edit_rejection, True]
+            await self.api.send_message(101, "<strong>bad markup</strong>")
+            await self.api.edit_message(101, 22, "<strong>bad markup</strong>")
 
-            self.assertEqual(call.await_args_list[0].args[1]["parse_mode"], "HTML")
-            self.assertNotIn("parse_mode", call.await_args_list[1].args[1])
-            self.assertEqual(call.await_args_list[2].args[1]["parse_mode"], "HTML")
-            self.assertNotIn("parse_mode", call.await_args_list[3].args[1])
-        finally:
-            await api.close()
+        self.assertEqual(send.await_args_list[0].kwargs["parse_mode"], "HTML")
+        self.assertIsNone(send.await_args_list[1].kwargs["parse_mode"])
+        self.assertEqual(edit.await_args_list[0].kwargs["parse_mode"], "HTML")
+        self.assertIsNone(edit.await_args_list[1].kwargs["parse_mode"])
+
+
+class TelegramFileTransferTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.api = TelegramAPI(BOT_TOKEN)
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    async def asyncTearDown(self) -> None:
+        await self.api.close()
+        self.temp_dir.cleanup()
+
+    async def test_download_is_stream_limited_and_creates_private_file(self) -> None:
+        destination = Path(self.temp_dir.name) / "download.txt"
+
+        async def chunks(**_kwargs):
+            yield b"safe"
+
+        with (
+            patch.object(self.api.bot, "get_file", new_callable=AsyncMock) as get_file,
+            patch.object(self.api.bot.session, "stream_content", new=chunks),
+        ):
+            get_file.return_value = {"file_path": "documents/file.txt", "file_size": 4}
+            size = await self.api.download_file("file-id", destination, max_bytes=4)
+
+        self.assertEqual(size, 4)
+        self.assertEqual(destination.read_bytes(), b"safe")
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+
+    async def test_download_removes_partial_file_when_stream_exceeds_limit(self) -> None:
+        destination = Path(self.temp_dir.name) / "too-large.txt"
+
+        async def chunks(**_kwargs):
+            yield b"123"
+
+        with (
+            patch.object(self.api.bot, "get_file", new_callable=AsyncMock) as get_file,
+            patch.object(self.api.bot.session, "stream_content", new=chunks),
+        ):
+            get_file.return_value = {"file_path": "documents/file.txt", "file_size": 3}
+            with self.assertRaises(TelegramApiError):
+                await self.api.download_file("file-id", destination, max_bytes=2)
+
+        self.assertFalse(destination.exists())
+
+    async def test_failed_exclusive_create_does_not_remove_existing_file(self) -> None:
+        destination = Path(self.temp_dir.name) / "existing.txt"
+        destination.write_text("keep me", encoding="utf-8")
+        with patch.object(self.api.bot, "get_file", new_callable=AsyncMock) as get_file:
+            get_file.return_value = {"file_path": "documents/file.txt", "file_size": 4}
+            with self.assertRaises(TelegramApiError):
+                await self.api.download_file("file-id", destination, max_bytes=10)
+
+        self.assertEqual(destination.read_text(encoding="utf-8"), "keep me")
+
+
+class TelegramOffsetBootstrapTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.api = TelegramAPI(BOT_TOKEN)
+
+    async def asyncTearDown(self) -> None:
+        await self.api.close()
+
+    async def test_bootstrap_confirms_only_updates_before_saved_offset(self) -> None:
+        with patch.object(self.api.bot, "get_updates", new_callable=AsyncMock) as get_updates:
+            get_updates.return_value = []
+            await self.api.confirm_updates_before(812)
+
+        payload = get_updates.await_args.kwargs
+        self.assertEqual(payload["offset"], 812)
+        self.assertEqual(payload["timeout"], 0)
+        self.assertEqual(payload["allowed_updates"], ["message", "callback_query"])
+        self.assertEqual(payload["request_timeout"], 10)
+
+    async def test_bootstrap_skips_empty_initial_offset(self) -> None:
+        with patch.object(self.api.bot, "get_updates", new_callable=AsyncMock) as get_updates:
+            await self.api.confirm_updates_before(0)
+        get_updates.assert_not_awaited()
 
 
 class TelegramButtonLayoutTests(unittest.TestCase):
@@ -154,19 +237,31 @@ class TelegramButtonLayoutTests(unittest.TestCase):
 
 
 class TelegramProxyClientTests(unittest.TestCase):
-    def test_api_client_uses_configured_proxy_auth_without_leaking_password(self) -> None:
+    def test_socks5h_proxy_keeps_remote_dns_and_separate_credentials(self) -> None:
         proxy = ProxySettings("socks5h://127.0.0.1:2080", "proxy-user", "proxy-secret")
-        with patch("telecodex.telegram.api.httpx.AsyncClient") as async_client:
-            TelegramAPI("bot-token", proxy)
+        api = TelegramAPI(BOT_TOKEN, proxy)
+        try:
+            session = api.bot.session
+            self.assertEqual(session.proxy[0], "socks5://127.0.0.1:2080")
+            self.assertEqual(session._connector_init["rdns"], True)
+            self.assertEqual(session._connector_init["username"], "proxy-user")
+            self.assertEqual(session._connector_init["password"], "proxy-secret")
+            self.assertNotIn("proxy-secret", repr(api))
+        finally:
+            asyncio.run(api.close())
 
-        client_options = async_client.call_args.kwargs
-        configured_proxy = client_options["proxy"]
-        self.assertEqual(str(configured_proxy.url), "socks5h://127.0.0.1:2080")
-        self.assertEqual(configured_proxy.auth, ("proxy-user", "proxy-secret"))
-        self.assertNotIn("proxy-secret", repr(configured_proxy))
+    def test_https_proxy_uses_tls_to_the_proxy(self) -> None:
+        api = TelegramAPI(BOT_TOKEN, ProxySettings("https://127.0.0.1:2080"))
+        try:
+            session = api.bot.session
+            self.assertEqual(session._connector_init["proxy_type"], ProxyType.HTTP)
+            self.assertIsNotNone(session._connector_init["proxy_ssl"])
+        finally:
+            asyncio.run(api.close())
 
-    def test_api_client_without_proxy_preserves_httpx_default(self) -> None:
-        with patch("telecodex.telegram.api.httpx.AsyncClient") as async_client:
-            TelegramAPI("bot-token")
-
-        self.assertNotIn("proxy", async_client.call_args.kwargs)
+    def test_no_proxy_uses_aiogram_default_connector(self) -> None:
+        api = TelegramAPI(BOT_TOKEN)
+        try:
+            self.assertIsNone(api.bot.session.proxy)
+        finally:
+            asyncio.run(api.close())

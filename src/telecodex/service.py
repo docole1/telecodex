@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from time import monotonic
 from typing import Any
 
+from aiogram import Bot
+
 from telecodex.codex.session import CodexSession
 from telecodex.config import AppConfig
-from telecodex.logging_config import bind_log_context, log_exception, log_identifier
+from telecodex.logging_config import log_exception
 from telecodex.i18n import TextCatalog
 from telecodex.shell.runner import ShellRunner
 from telecodex.recovery_supervisor import RecoverySupervisor
@@ -16,7 +17,8 @@ from telecodex.state import RuntimeStateStore
 from telecodex.systemd import SystemdNotifier
 from telecodex.telegram.api import TelegramAPI, TelegramApiError
 from telecodex.telegram.controller import TelegramController
-from telecodex.telegram.updates import IncomingMessage, parse_update
+from telecodex.telegram.routers import TelegramUpdateRouters
+from telecodex.telegram.polling import PollingRequestMiddleware, TelegramUpdateMiddleware
 from telecodex.telegram.user_controller import TelegramUserController
 from telecodex.telegram.media_groups import TelegramMediaGroupBuffer
 
@@ -50,7 +52,20 @@ class TeleCodexService:
             self.controller._handle_media_group,
             self._report_media_group_error,
         )
+        self.telegram_updates = TelegramUpdateRouters(self.controller, self.media_groups)
         self.last_update_id = self.state_store.load_last_update_id()
+        self.telegram.add_request_middleware(
+            PollingRequestMiddleware(self._poll_succeeded, self._poll_failed)
+        )
+        self.telegram_updates.dispatcher.update.outer_middleware(
+            TelegramUpdateMiddleware(
+                self.state_store,
+                self.controller,
+                initial_offset=self.last_update_id,
+                on_offset_saved=self._offset_saved,
+            )
+        )
+        self.telegram_updates.dispatcher.startup.register(self._on_polling_startup)
         self._running = False
         self._poll_error_count = 0
         self._poll_heartbeat_at = monotonic()
@@ -82,192 +97,14 @@ class TeleCodexService:
 
     async def run(self) -> None:
         try:
-            me = await self.telegram.get_me()
-            bot_user_id = me.get("id")
-            if isinstance(bot_user_id, int) and bot_user_id > 0:
-                self.telegram.set_bot_user_id(bot_user_id)
-            logger.info(
-                "Telegram bot authenticated",
-                extra={
-                    "event": "telegram.bot.authenticated",
-                    "bot_username": me.get("username", "unknown"),
-                },
+            await self.telegram_updates.dispatcher.start_polling(
+                self.telegram.bot,
+                polling_timeout=50,
+                handle_as_tasks=False,
+                allowed_updates=["message", "callback_query"],
+                handle_signals=True,
+                close_bot_session=False,
             )
-            await self.controller.start()
-            self.media_groups.restore()
-            self._running = True
-            self._recovery_supervisor.start()
-            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
-            offset = self.last_update_id or None
-            logger.info("TeleCodex service started", extra={"event": "telecodex.service.started"})
-            self._notifier.ready("TeleCodex is polling Telegram")
-            while self._running:
-                try:
-                    updates = await self.telegram.get_updates(offset)
-                except TelegramApiError as exc:
-                    self._poll_error_count += 1
-                    logger.warning(
-                        "Telegram polling request failed",
-                        extra={
-                            "event": "telegram.poll.failed",
-                            "error_type": type(exc).__name__,
-                            "operation": exc.method,
-                            "error_code": exc.error_code,
-                            "http_status": exc.http_status,
-                            "poll_error_count": self._poll_error_count,
-                            "timeout_seconds": 60,
-                        },
-                    )
-                    if self._poll_error_count >= 3:
-                        try:
-                            await self.telegram.reset_connection()
-                            logger.warning(
-                                "Reset Telegram HTTP connection after repeated failures",
-                                extra={
-                                    "event": "telegram.poll.connection_reset",
-                                    "poll_error_count": self._poll_error_count,
-                                },
-                            )
-                        except Exception as reset_error:
-                            log_exception(
-                                logger,
-                                "Could not reset Telegram HTTP connection",
-                                reset_error,
-                                event="telegram.poll.connection_reset_failed",
-                                level=logging.WARNING,
-                                poll_error_count=self._poll_error_count,
-                            )
-                        self._poll_error_count = 0
-                    await asyncio.sleep(3)
-                    continue
-                self._poll_error_count = 0
-                self._poll_heartbeat_at = monotonic()
-                for update in updates:
-                    update_id = update.get("update_id")
-                    if isinstance(update_id, int):
-                        offset = update_id + 1
-                    update_started_at = monotonic()
-                    correlation_id = (
-                        f"telegram-{update_id}"
-                        if isinstance(update_id, int)
-                        else uuid.uuid4().hex[:12]
-                    )
-                    context_fields: dict[str, Any] = {
-                        "correlation_id": correlation_id,
-                        "update_id": update_id if isinstance(update_id, int) else None,
-                    }
-                    outcome = "failed"
-                    try:
-                        with bind_log_context(**context_fields):
-                            incoming = parse_update(update)
-                            if isinstance(incoming, IncomingMessage):
-                                context_fields = {
-                                    **context_fields,
-                                    "context_kind": incoming.chat_type or "unknown",
-                                    "context_hash": log_identifier(
-                                        incoming.chat_id, namespace="telegram-chat"
-                                    ),
-                                    "actor_hash": log_identifier(
-                                        incoming.user_id, namespace="telegram-user"
-                                    ),
-                                }
-                            elif incoming is not None:
-                                context_fields = {
-                                    **context_fields,
-                                    "context_kind": "callback",
-                                    "context_hash": log_identifier(
-                                        incoming.chat_id, namespace="telegram-chat"
-                                    ),
-                                    "actor_hash": log_identifier(
-                                        incoming.user_id, namespace="telegram-user"
-                                    ),
-                                }
-                            with bind_log_context(**context_fields):
-                                logger.info(
-                                    "Telegram update received",
-                                    extra={
-                                        "event": "telegram.update.received",
-                                        "update_kind": type(incoming).__name__ if incoming else "ignored",
-                                    },
-                                )
-                                if (
-                                    isinstance(incoming, IncomingMessage)
-                                    and incoming.media_group_id is not None
-                                    and incoming.attachments
-                                    and self.controller.can_user_access_context(
-                                        incoming.chat_id, incoming.user_id
-                                    )
-                                    and (
-                                        (
-                                            incoming.chat_type == "private"
-                                            and incoming.chat_id == incoming.user_id
-                                        )
-                                        or (
-                                            incoming.chat_type in {"group", "supergroup"}
-                                            and self.state_store.is_group_attached(incoming.chat_id)
-                                        )
-                                    )
-                                ):
-                                    await self.media_groups.flush_before(update)
-                                    await self.media_groups.add(update)
-                                else:
-                                    await self.media_groups.flush_before(update)
-                                    await self.controller._handle_update(update)
-                            outcome = "ok"
-                    except Exception as exc:
-                        outcome = "error"
-                        with bind_log_context(**context_fields):
-                            logger.exception(
-                                "Telegram update failed",
-                                extra={
-                                    "event": "telegram.update.failed",
-                                    "error_type": type(exc).__name__,
-                                },
-                            )
-                            try:
-                                await self.controller.send_error_for_update(
-                                    update,
-                                    "errors.label.update_failed",
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "Could not report Telegram update failure",
-                                    extra={"event": "telegram.update.error_report_failed"},
-                                )
-                    finally:
-                        if isinstance(update_id, int):
-                            self.last_update_id = update_id + 1
-                            try:
-                                self.state_store.save_last_update_id(self.last_update_id)
-                            except Exception as exc:
-                                outcome = "state_persist_error"
-                                with bind_log_context(**context_fields):
-                                    log_exception(
-                                        logger,
-                                        "Could not persist Telegram polling offset",
-                                        exc,
-                                        event="telecodex.state.poll_offset_save_failed",
-                                    )
-                        elapsed = monotonic() - update_started_at
-                        with bind_log_context(**context_fields):
-                            logger.info(
-                                "Telegram update handled",
-                                extra={
-                                    "event": "telegram.update.completed",
-                                    "duration_ms": round(elapsed * 1000),
-                                    "outcome": outcome,
-                                },
-                            )
-                        if elapsed >= 10:
-                            logger.warning(
-                                "Telegram update handling exceeded the slow-update threshold",
-                                extra={
-                                    "event": "telegram.update.slow",
-                                    "duration_ms": round(elapsed * 1000),
-                                    "outcome": outcome,
-                                    **context_fields,
-                                },
-                            )
         finally:
             self._running = False
             logger.info("TeleCodex service stopping", extra={"event": "telecodex.service.stopping"})
@@ -280,6 +117,57 @@ class TeleCodexService:
             await self.media_groups.close()
             await self.controller.close()
             await self.telegram.close()
+
+    async def _on_polling_startup(self, bot: Bot, **_data: Any) -> None:
+        me = await bot.me()
+        self.telegram.set_bot_user_id(me.id)
+        logger.info(
+            "Telegram bot authenticated",
+            extra={
+                "event": "telegram.bot.authenticated",
+                "bot_username": me.username or "unknown",
+            },
+        )
+        await self.controller.start()
+        self.media_groups.restore()
+        if self.last_update_id > 0:
+            try:
+                await self.telegram.confirm_updates_before(self.last_update_id)
+            except TelegramApiError as exc:
+                logger.warning(
+                    "Could not synchronize the persisted Telegram update offset before polling",
+                    extra={
+                        "event": "telegram.poll.offset_bootstrap_failed",
+                        "error_type": type(exc).__name__,
+                        "operation": exc.method,
+                        "error_code": exc.error_code,
+                    },
+                )
+        self._running = True
+        self._poll_heartbeat_at = monotonic()
+        self._recovery_supervisor.start()
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        logger.info("TeleCodex service started", extra={"event": "telecodex.service.started"})
+        self._notifier.ready("TeleCodex is polling Telegram with Aiogram")
+
+    def _poll_succeeded(self) -> None:
+        self._poll_error_count = 0
+        self._poll_heartbeat_at = monotonic()
+
+    def _poll_failed(self, exc: Exception) -> None:
+        self._poll_error_count += 1
+        logger.warning(
+            "Aiogram could not fetch Telegram updates; its polling backoff will retry",
+            extra={
+                "event": "telegram.poll.failed",
+                "error_type": type(exc).__name__,
+                "poll_error_count": self._poll_error_count,
+                "timeout_seconds": 60,
+            },
+        )
+
+    def _offset_saved(self, next_offset: int) -> None:
+        self.last_update_id = next_offset
 
     def _note_recovery_heartbeat(self) -> None:
         self._recovery_heartbeat_at = monotonic()

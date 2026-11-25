@@ -130,6 +130,9 @@ class TelegramController:
         incoming = parse_update(update)
         if incoming is None:
             return
+        await self._handle_incoming(incoming)
+
+    async def _handle_incoming(self, incoming: IncomingMessage | IncomingCallback) -> None:
         if isinstance(incoming, IncomingMessage) and await self._handle_group_command(incoming):
             return
         if isinstance(incoming, IncomingMessage) and await self._handle_group_setup_response(incoming):
@@ -141,7 +144,7 @@ class TelegramController:
         controller = self._controller_for_update(incoming)
         if controller is None:
             return
-        await controller._handle_update(update)
+        await controller._handle_incoming(incoming)
 
     async def _handle_group_setup_response(self, incoming: IncomingMessage) -> bool:
         if (

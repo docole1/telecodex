@@ -42,7 +42,7 @@ from telecodex.documents.processor import (
     prepare_attachments,
 )
 from telecodex.audio.transcriber import AudioTranscriptionError, LocalAudioTranscriber
-from telecodex.group_triggers import strip_group_trigger
+from telecodex.group_triggers import strip_group_trigger, strip_group_trigger_with_offset
 from telecodex.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TextCatalog, load_text_catalog
 from telecodex.logging_config import (
     bind_log_context,
@@ -1033,6 +1033,9 @@ class TelegramUserController(McpTelegramMixin):
                 },
             )
             return
+        await self._handle_incoming(incoming)
+
+    async def _handle_incoming(self, incoming: IncomingMessage | IncomingCallback) -> None:
         accepted = (
             incoming.chat_id == self.chat_id
             and self._is_authorized_user(incoming.user_id)
@@ -1113,37 +1116,43 @@ class TelegramUserController(McpTelegramMixin):
         )
         if not attachments:
             return
-        captions: list[str] = []
+        captions: list[tuple[str, str]] = []
         trigger_found = (
             self._is_reply_to_bot(first)
             or (self.is_group and self._group_all_messages_to_codex())
         )
         for item in incoming_messages:
-            caption = item.text.strip()
-            if not caption:
+            caption = item.text
+            model_caption = item.prompt_text
+            if not caption.strip():
                 continue
             if self.is_group:
-                without_trigger = self._consume_group_trigger(caption)
+                without_trigger = self._consume_group_trigger_with_offset(caption)
                 if without_trigger is not None:
                     trigger_found = True
-                    caption = without_trigger
-            captions.append(caption)
+                    caption, consumed = without_trigger
+                    model_caption = item.without_prefix(consumed).prompt_text
+            captions.append((caption.strip(), model_caption.strip()))
         has_audio = any(attachment.kind in {"voice", "audio"} for attachment in attachments)
         if self.is_group and not trigger_found and not has_audio:
             return
-        captions = list(dict.fromkeys(captions))
+        unique_caption_models: dict[str, str] = {}
+        for caption, model_caption in captions:
+            unique_caption_models.setdefault(caption, model_caption)
+        unique_captions = list(unique_caption_models.items())
         grouped = IncomingMessage(
             update_id=first.update_id,
             message_id=first.message_id,
             user_id=first.user_id,
             chat_id=first.chat_id,
             chat_type=first.chat_type,
-            text="\n\n".join(captions),
+            text="\n\n".join(caption for caption, _model in unique_captions),
             attachments=attachments,
             chat_title=first.chat_title,
             group_trigger_checked=self.is_group,
             group_trigger_required=self.is_group and not trigger_found,
             reply_to_user_id=first.reply_to_user_id,
+            model_text="\n\n".join(model for _caption, model in unique_captions),
         )
         await self._handle_message(grouped)
 
@@ -1225,6 +1234,7 @@ class TelegramUserController(McpTelegramMixin):
             return
         if parsed:
             command, argument = parsed
+            model_argument = incoming.command_argument_markdown()
             busy_allowed = command in BUSY_ALLOWED_COMMANDS or (
                 getattr(self._codex(), "recovery_blocked", False)
                 and command in {"new", "chats"}
@@ -1301,9 +1311,9 @@ class TelegramUserController(McpTelegramMixin):
             elif command == "compact":
                 await self._compact_chat(incoming.chat_id)
             elif command == "plan":
-                await self._handle_plan_command(incoming, argument)
+                await self._handle_plan_command(incoming, argument, model_argument)
             elif command == "goal":
-                await self._handle_goal_command(incoming, argument)
+                await self._handle_goal_command(incoming, argument, model_argument)
             elif command == "recap":
                 await self._recap_chat(incoming)
             elif command == "init":
@@ -1363,16 +1373,17 @@ class TelegramUserController(McpTelegramMixin):
 
         if self.is_group and not incoming.group_trigger_checked:
             if self._group_all_messages_to_codex():
-                without_trigger = self._consume_group_trigger(incoming.text)
+                without_trigger = self._consume_group_trigger_with_offset(incoming.text)
                 if without_trigger is not None:
-                    if not without_trigger and not incoming.attachments:
+                    without_trigger_text, consumed = without_trigger
+                    if not without_trigger_text and not incoming.attachments:
                         await self.telegram.send_message(
                             incoming.chat_id,
                             self._text("groups.label.trigger_empty"),
                             reply_to_message_id=incoming.message_id,
                         )
                         return
-                    incoming = replace(incoming, text=without_trigger)
+                    incoming = incoming.without_prefix(consumed)
                 incoming = replace(
                     incoming,
                     group_trigger_checked=True,
@@ -1385,7 +1396,7 @@ class TelegramUserController(McpTelegramMixin):
                     group_trigger_required=False,
                 )
             else:
-                without_trigger = self._consume_group_trigger(incoming.text)
+                without_trigger = self._consume_group_trigger_with_offset(incoming.text)
                 has_audio = any(attachment.kind in {"voice", "audio"} for attachment in incoming.attachments)
                 if without_trigger is None and not has_audio:
                     return
@@ -1395,7 +1406,7 @@ class TelegramUserController(McpTelegramMixin):
                         group_trigger_checked=True,
                         group_trigger_required=True,
                     )
-                elif not without_trigger and not incoming.attachments:
+                elif not without_trigger[0] and not incoming.attachments:
                     await self.telegram.send_message(
                         incoming.chat_id,
                         self._text("groups.label.trigger_empty"),
@@ -1404,8 +1415,7 @@ class TelegramUserController(McpTelegramMixin):
                     return
                 else:
                     incoming = replace(
-                        incoming,
-                        text=without_trigger,
+                        incoming.without_prefix(without_trigger[1]),
                         group_trigger_checked=True,
                         group_trigger_required=False,
                     )
@@ -1424,15 +1434,18 @@ class TelegramUserController(McpTelegramMixin):
             if audio_only:
                 await self._send_attachments(incoming)
                 return
-            await self._resolve_user_input(incoming.text)
+            await self._resolve_user_input(incoming.prompt_text)
             return
         if incoming.attachments:
             await self._send_attachments(incoming)
             return
-        await self._send_to_codex(incoming.chat_id, incoming.text, incoming.message_id)
+        await self._send_to_codex(incoming.chat_id, incoming.prompt_text, incoming.message_id)
 
     def _consume_group_trigger(self, text: str) -> str | None:
         return strip_group_trigger(text, self._group_trigger_words())
+
+    def _consume_group_trigger_with_offset(self, text: str) -> tuple[str, int] | None:
+        return strip_group_trigger_with_offset(text, self._group_trigger_words())
 
     def _is_reply_to_bot(self, incoming: IncomingMessage) -> bool:
         bot_user_id = getattr(self.telegram, "bot_user_id", None)
@@ -1524,20 +1537,30 @@ class TelegramUserController(McpTelegramMixin):
                     Path(item.original_path).unlink(missing_ok=True)
 
         transcript_text = "\n".join(audio_transcripts) if audio_transcripts else ""
-        prompt_parts = [incoming.text.strip(), transcript_text]
-        prompt_parts = [part for part in prompt_parts if part]
         if incoming.group_trigger_required:
             trigger_found = False
-            for index, part in enumerate(prompt_parts):
-                without_trigger = self._consume_group_trigger(part)
+            raw_parts = [incoming.text, transcript_text]
+            model_parts = [incoming.prompt_text, transcript_text]
+            for index, part in enumerate(raw_parts):
+                without_trigger = self._consume_group_trigger_with_offset(part)
                 if without_trigger is not None:
-                    prompt_parts[index] = without_trigger
+                    _remaining, consumed = without_trigger
+                    raw_parts[index] = part[consumed:]
+                    model_parts[index] = (
+                        incoming.without_prefix(consumed).prompt_text
+                        if index == 0
+                        else part[consumed:]
+                    )
                     trigger_found = True
                     break
             if not trigger_found:
                 await self._finish_typing()
                 return
-            prompt_parts = [part for part in prompt_parts if part]
+            prompt_parts = [
+                (raw.strip(), model.strip())
+                for raw, model in zip(raw_parts, model_parts, strict=True)
+                if raw.strip()
+            ]
             if not prompt_parts and not any(not item.is_audio for item in prepared):
                 await self._finish_typing()
                 await self.telegram.send_message(
@@ -1546,17 +1569,26 @@ class TelegramUserController(McpTelegramMixin):
                     reply_to_message_id=incoming.message_id,
                 )
                 return
+        else:
+            prompt_parts = [
+                (raw.strip(), model.strip())
+                for raw, model in (
+                    (incoming.text, incoming.prompt_text),
+                    (transcript_text, transcript_text),
+                )
+                if raw.strip()
+            ]
 
         if transcript_text:
             await self._send_audio_transcript(incoming.chat_id, incoming.message_id, transcript_text)
 
         if self.pending_user_input is not None:
-            answer = "\n\n".join(prompt_parts)
+            answer = "\n\n".join(model for _raw, model in prompt_parts)
             await self._finish_typing()
             await self._resolve_user_input(answer)
             return
 
-        task = "\n\n".join(prompt_parts) or self._text("documents.values.default_prompt")
+        task = "\n\n".join(model for _raw, model in prompt_parts) or self._text("documents.values.default_prompt")
         references: list[str] = []
         input_items: list[dict[str, Any]] = []
         for attachment in prepared:
@@ -2606,9 +2638,15 @@ class TelegramUserController(McpTelegramMixin):
             return
         self._notify_typing_cleared()
 
-    async def _handle_plan_command(self, incoming: IncomingMessage, argument: str) -> None:
+    async def _handle_plan_command(
+        self,
+        incoming: IncomingMessage,
+        argument: str,
+        model_argument: str | None = None,
+    ) -> None:
         codex = self._codex()
         value = argument.strip()
+        model_value = model_argument.strip() if model_argument is not None else value
         explicit_mode = value.casefold()
         if not value or explicit_mode in {"on", "off"}:
             if not codex.state.thread_id:
@@ -2656,7 +2694,7 @@ class TelegramUserController(McpTelegramMixin):
             )
             await self.telegram.send_message(incoming.chat_id, self._text("plan.label.failed"))
         else:
-            await self._send_to_codex(incoming.chat_id, value, incoming.message_id)
+            await self._send_to_codex(incoming.chat_id, model_value, incoming.message_id)
 
     async def _consume_goal_edit_input(self, incoming: IncomingMessage) -> bool:
         pending = self.pending_goal_edit
@@ -2708,7 +2746,7 @@ class TelegramUserController(McpTelegramMixin):
         self._turn_prompt_message_id = incoming.message_id
         self._start_typing()
         try:
-            goal = await codex.set_goal(incoming.text, prompt_message_id=incoming.message_id)
+            goal = await codex.set_goal(incoming.prompt_text, prompt_message_id=incoming.message_id)
         except GoalUnavailableError:
             await self._finish_typing()
             await self.telegram.send_message(
@@ -2738,9 +2776,15 @@ class TelegramUserController(McpTelegramMixin):
                 await self._finish_typing()
         return True
 
-    async def _handle_goal_command(self, incoming: IncomingMessage, argument: str) -> None:
+    async def _handle_goal_command(
+        self,
+        incoming: IncomingMessage,
+        argument: str,
+        model_argument: str | None = None,
+    ) -> None:
         codex = self._codex()
         value = argument.strip()
+        model_value = model_argument.strip() if model_argument is not None else value
         action = value.casefold()
         try:
             if not value:
@@ -2833,7 +2877,7 @@ class TelegramUserController(McpTelegramMixin):
 
             self._turn_prompt_message_id = incoming.message_id
             self._start_typing()
-            goal = await codex.set_goal(value, prompt_message_id=incoming.message_id)
+            goal = await codex.set_goal(model_value, prompt_message_id=incoming.message_id)
             await self.telegram.send_message(
                 incoming.chat_id,
                 self._text("goal.label.started" if goal.status == "active" else "goal.label.updated"),

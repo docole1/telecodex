@@ -8,7 +8,7 @@ from telecodex.codex.session import CodexMemorySettings, CodexBackgroundTerminal
 from telecodex.config import AppConfig
 from telecodex.telegram.activity import explored_action_summaries, file_change_groups, image_saved_path, web_search_detail
 from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT, split_plain_text
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage
+from telecodex.telegram.updates import IncomingCallback, IncomingMessage, parse_update
 from telecodex.telegram.user_controller import RunningCommand, TelegramUserController
 
 from multi_user_test_support import FakeCodex, FakeTelegram, _catalog_text, _plain_html
@@ -191,6 +191,64 @@ class CodexActivityHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(
                 any("Дождись завершения" in text for _, text in telegram.messages)
             )
+            await controller._finish_typing()
+
+    async def test_plan_and_goal_arguments_keep_telegram_formatting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            controller, _telegram = self._controller(Path(temp_dir))
+            codex = controller._codex()
+
+            plan = parse_update(
+                {
+                    "update_id": 1,
+                    "message": {
+                        "message_id": 77,
+                        "from": {"id": 101},
+                        "chat": {"id": 101, "type": "private"},
+                        "text": "/plan Write a plan",
+                        "entities": [{"type": "bold", "offset": 6, "length": 5}],
+                    },
+                }
+            )
+            goal = parse_update(
+                {
+                    "update_id": 2,
+                    "message": {
+                        "message_id": 78,
+                        "from": {"id": 101},
+                        "chat": {"id": 101, "type": "private"},
+                        "text": "/goal Finish the task",
+                        "entities": [{"type": "italic", "offset": 6, "length": 6}],
+                    },
+                }
+            )
+
+            self.assertIsInstance(plan, IncomingMessage)
+            self.assertIsInstance(goal, IncomingMessage)
+            await controller._handle_message(plan)  # type: ignore[arg-type]
+            await controller._handle_message(goal)  # type: ignore[arg-type]
+
+            self.assertEqual(codex.messages, ["**Write** a plan"])
+            self.assertEqual(codex.goal.objective, "*Finish* the task")  # type: ignore[union-attr]
+
+            await controller._handle_message(
+                IncomingMessage(3, 79, 101, 101, "private", "/goal edit")
+            )
+            edited_goal = parse_update(
+                {
+                    "update_id": 4,
+                    "message": {
+                        "message_id": 80,
+                        "from": {"id": 101},
+                        "chat": {"id": 101, "type": "private"},
+                        "text": "Revise objective",
+                        "entities": [{"type": "bold", "offset": 0, "length": 6}],
+                    },
+                }
+            )
+            self.assertIsInstance(edited_goal, IncomingMessage)
+            await controller._handle_message(edited_goal)  # type: ignore[arg-type]
+            self.assertEqual(codex.goal.objective, "**Revise** objective")  # type: ignore[union-attr]
             await controller._finish_typing()
 
     async def test_messages_steer_active_turn_and_queue_after_compaction_barrier(self) -> None:
