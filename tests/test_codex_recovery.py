@@ -10,10 +10,11 @@ from telecodex.codex.session import ActiveThreadWriterError, CodexServiceTier, C
 from telecodex.config import AppConfig
 from telecodex.state import PendingTurnState, RuntimeState, RuntimeStateStore, ThreadRuntimeState
 from telecodex.telegram.controller import TelegramController
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage
 from telecodex.telegram.user_controller import TelegramUserController
 
 from multi_user_test_support import (
+    callback_event,
+    message_event,
     FakeAppServer,
     FakeCodex,
     FakeTelegram,
@@ -105,7 +106,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "thread-locked"
 
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, 101, "private", "/chats")
+                message_event(1, 1, 101, 101, "private", "/chats")
             )
 
             markup = telegram.reply_markups[-1]
@@ -127,14 +128,14 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
         controller: TelegramUserController,
         telegram: FakeTelegram,
     ) -> None:
-        await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/chats"))
+        await controller._handle_message(message_event(1, 1, 101, 101, "private", "/chats"))
         detail_data = telegram.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
         await controller._handle_callback(
-            IncomingCallback(2, "open-chat-details", 101, 101, 1, detail_data)
+            callback_event(2, "open-chat-details", 101, 101, 1, detail_data)
         )
         select_data = telegram.edit_markups[-1]["inline_keyboard"][0][0]["callback_data"]
         await controller._handle_callback(
-            IncomingCallback(3, "select-chat", 101, 101, 1, select_data)
+            callback_event(3, "select-chat", 101, 101, 1, select_data)
         )
 
     async def test_active_writer_offers_retry_and_retry_selects_after_release(self) -> None:
@@ -154,7 +155,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             codex.select_error = None
             await controller._handle_callback(
-                IncomingCallback(3, "retry-chat", 101, 101, 1, retry_data)
+                callback_event(3, "retry-chat", 101, 101, 1, retry_data)
             )
 
             self.assertEqual(codex.select_calls, [("thread-locked", workspace), ("thread-locked", workspace)])
@@ -173,7 +174,7 @@ class ActiveWriterRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             fork_data = self._button(telegram.edit_markups[-1], "f")
             await controller._handle_callback(
-                IncomingCallback(3, "fork-chat", 101, 101, 1, fork_data)
+                callback_event(3, "fork-chat", 101, 101, 1, fork_data)
             )
 
             self.assertEqual(codex.fork_by_id_calls, [("thread-locked", workspace)])

@@ -6,6 +6,7 @@ from time import monotonic
 from typing import Any
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 
 from telecodex.codex.session import CodexSession
 from telecodex.config import AppConfig
@@ -15,7 +16,7 @@ from telecodex.shell.runner import ShellRunner
 from telecodex.recovery_supervisor import RecoverySupervisor
 from telecodex.state import RuntimeStateStore
 from telecodex.systemd import SystemdNotifier
-from telecodex.telegram.api import TelegramAPI, TelegramApiError
+from telecodex.telegram.api import TelegramFormattingFallbackMiddleware, create_telegram_bot
 from telecodex.telegram.controller import TelegramController
 from telecodex.telegram.routers import TelegramUpdateRouters
 from telecodex.telegram.polling import PollingRequestMiddleware, TelegramUpdateMiddleware
@@ -31,7 +32,7 @@ class TeleCodexService:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.texts = TextCatalog()
-        self.telegram = TelegramAPI(config.telegram_bot_token, config.telegram_proxy)
+        self.telegram = create_telegram_bot(config.telegram_bot_token, config.telegram_proxy)
         self.state_store = RuntimeStateStore(
             config.database_file,
             config.telegram_allowed_user_ids[0],
@@ -54,7 +55,8 @@ class TeleCodexService:
         )
         self.telegram_updates = TelegramUpdateRouters(self.controller, self.media_groups)
         self.last_update_id = self.state_store.load_last_update_id()
-        self.telegram.add_request_middleware(
+        self.telegram.session.middleware.register(TelegramFormattingFallbackMiddleware())
+        self.telegram.session.middleware.register(
             PollingRequestMiddleware(self._poll_succeeded, self._poll_failed)
         )
         self.telegram_updates.dispatcher.update.outer_middleware(
@@ -98,7 +100,7 @@ class TeleCodexService:
     async def run(self) -> None:
         try:
             await self.telegram_updates.dispatcher.start_polling(
-                self.telegram.bot,
+                self.telegram,
                 polling_timeout=50,
                 handle_as_tasks=False,
                 allowed_updates=["message", "callback_query"],
@@ -116,11 +118,10 @@ class TeleCodexService:
                 await asyncio.gather(watchdog_task, return_exceptions=True)
             await self.media_groups.close()
             await self.controller.close()
-            await self.telegram.close()
+            await self.telegram.session.close()
 
     async def _on_polling_startup(self, bot: Bot, **_data: Any) -> None:
         me = await bot.me()
-        self.telegram.set_bot_user_id(me.id)
         logger.info(
             "Telegram bot authenticated",
             extra={
@@ -132,15 +133,20 @@ class TeleCodexService:
         self.media_groups.restore()
         if self.last_update_id > 0:
             try:
-                await self.telegram.confirm_updates_before(self.last_update_id)
-            except TelegramApiError as exc:
+                await self.telegram.get_updates(
+                    offset=self.last_update_id,
+                    timeout=0,
+                    allowed_updates=["message", "callback_query"],
+                    request_timeout=10,
+                )
+            except TelegramAPIError as exc:
                 logger.warning(
                     "Could not synchronize the persisted Telegram update offset before polling",
                     extra={
                         "event": "telegram.poll.offset_bootstrap_failed",
                         "error_type": type(exc).__name__,
-                        "operation": exc.method,
-                        "error_code": exc.error_code,
+                        "operation": getattr(exc.method, "__api_method__", None),
+                        "error_code": getattr(exc, "error_code", None),
                     },
                 )
         self._running = True

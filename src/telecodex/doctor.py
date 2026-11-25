@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from aiogram import Bot
     from telecodex.audio.transcriber import LocalAudioTranscriber
     from telecodex.codex.session import CodexSession
-    from telecodex.telegram.api import TelegramAPI
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class DoctorReport:
 
 
 async def collect_doctor_report(
-    telegram: TelegramAPI,
+    telegram: Bot,
     codex: CodexSession,
     telegram_proxy_configured: bool,
     audio_transcriber: LocalAudioTranscriber | None = None,
@@ -57,9 +57,9 @@ async def collect_doctor_report(
     )
 
 
-async def _check_telegram(telegram: TelegramAPI) -> tuple[bool, str | None]:
+async def _check_telegram(telegram: Bot) -> tuple[bool, str | None]:
     try:
-        await telegram.get_me(timeout=8)
+        await telegram.get_me(request_timeout=8)
     except Exception as exc:
         cause = exc.__cause__
         detail = type(cause).__name__ if cause is not None else type(exc).__name__

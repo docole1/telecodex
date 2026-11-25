@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from multi_user_test_support import FakeSentMessage, callback_event, message_event
+
 from telecodex.codex.app_server import build_app_server_environment
 from telecodex.codex.mcp import (
     McpServer,
@@ -27,7 +29,6 @@ from telecodex.codex.session import CodexSession
 from telecodex.config import AppConfig, _parse_mcp_env_vars, load_config
 from telecodex.state import RuntimeStateStore
 from telecodex.telegram.controller import TelegramController
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage
 from telecodex.telegram.user_controller import TelegramUserController
 
 
@@ -447,6 +448,7 @@ class CodexMcpSessionTests(unittest.IsolatedAsyncioTestCase):
 
 class FakeTelegram:
     def __init__(self) -> None:
+        self.id = 999
         self.messages: list[tuple[int, str]] = []
         self.markups: list[dict[str, Any] | None] = []
         self.edits: list[tuple[int, int, str]] = []
@@ -460,21 +462,27 @@ class FakeTelegram:
         text: str,
         reply_markup: dict[str, Any] | None = None,
         **_kwargs: Any,
-    ) -> dict[str, int]:
+    ) -> FakeSentMessage:
         self.messages.append((chat_id, text))
         self.markups.append(reply_markup)
         message_id = self.next_message_id
         self.next_message_id += 1
-        return {"message_id": message_id}
+        return FakeSentMessage(message_id=message_id)
 
     async def send_rich_message(
         self,
         chat_id: int,
-        markdown: str,
+        rich_message: Any,
         *,
-        reply_to_message_id: int | None = None,
+        reply_parameters: Any = None,
         disable_notification: bool = False,
-    ) -> dict[str, int]:
+    ) -> FakeSentMessage:
+        markdown = (
+            rich_message.get("markdown", "")
+            if isinstance(rich_message, dict)
+            else getattr(rich_message, "markdown", "")
+        )
+        reply_to_message_id = reply_parameters.message_id if reply_parameters is not None else None
         return await self.send_message(
             chat_id,
             markdown,
@@ -482,7 +490,7 @@ class FakeTelegram:
             disable_notification=disable_notification,
         )
 
-    async def edit_message(
+    async def edit_message_text(
         self,
         chat_id: int,
         message_id: int,
@@ -492,8 +500,8 @@ class FakeTelegram:
         self.edits.append((chat_id, message_id, text))
         self.markups.append(reply_markup)
 
-    async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
-        self.callbacks.append((callback_id, text or ""))
+    async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        self.callbacks.append((callback_query_id, text or ""))
 
 
 class FakeMcpCodex:
@@ -552,14 +560,14 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             controller, telegram, codex = self._controller(workspace)
-            await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/mcp add"))
+            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/mcp add"))
             picker = controller.mcp_picker
             self.assertIsNotNone(picker)
             assert picker is not None
             self.assertEqual(controller.mcp_add_wizard.stage, "transport")  # type: ignore[union-attr]
 
             await controller._handle_callback(
-                IncomingCallback(2, "transport", 101, 101, picker.message_id or 1, f"mc:{picker.token}:stdio")
+                callback_event(2, "transport", 101, 101, picker.message_id or 1, f"mc:{picker.token}:stdio")
             )
             wizard = controller.mcp_add_wizard
             assert wizard is not None
@@ -571,13 +579,13 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
                 ("-", "confirm"),
             ):
                 await controller._handle_message(
-                    IncomingMessage(3, 3, 101, 101, "private", value)
+                    message_event(3, 3, 101, 101, "private", value)
                 )
                 self.assertEqual(wizard.stage, expected_stage)
                 self.assertEqual(codex.added, [])
 
             await controller._handle_callback(
-                IncomingCallback(4, "confirm", 101, 101, picker.message_id or 1, f"mc:{picker.token}:add_confirm")
+                callback_event(4, "confirm", 101, 101, picker.message_id or 1, f"mc:{picker.token}:add_confirm")
             )
 
         self.assertEqual(codex.added, [("fixture", "python3", ("-m", "fixture"), None, ())])
@@ -590,7 +598,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             controller.chat_id = -100123
             controller.user_id = -100123
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, -100123, "group", "/mcp add")
+                message_event(1, 1, 101, -100123, "group", "/mcp add")
             )
 
         self.assertEqual(controller.mcp_add_wizard.owner_user_id, 101)  # type: ignore[union-attr]
@@ -600,7 +608,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             controller, telegram, _ = self._controller(Path(temp_dir))
 
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, 101, "private", "/mcp login fixture")
+                message_event(1, 1, 101, 101, "private", "/mcp login fixture")
             )
 
         self.assertIn("Открой страницу авторизации", telegram.messages[0][1])
@@ -615,7 +623,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             codex.remote_oauth_callback = False
 
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, 101, "private", "/mcp login fixture")
+                message_event(1, 1, 101, 101, "private", "/mcp login fixture")
             )
 
         self.assertIn("codex mcp login fixture --no-browser", telegram.messages[0][1])
@@ -628,7 +636,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_http_wizard_collects_oauth_configuration_without_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram, codex = self._controller(Path(temp_dir))
-            await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/mcp add"))
+            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/mcp add"))
             picker = controller.mcp_picker
             assert picker is not None and picker.message_id is not None
             transport_rows = telegram.markups[-1]["inline_keyboard"]
@@ -638,19 +646,19 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual([len(row) for row in transport_rows[:2]], [1, 1])
             await controller._handle_callback(
-                IncomingCallback(2, "http", 101, 101, picker.message_id, f"mc:{picker.token}:http")
+                callback_event(2, "http", 101, 101, picker.message_id, f"mc:{picker.token}:http")
             )
             wizard = controller.mcp_add_wizard
             assert wizard is not None
-            await controller._handle_message(IncomingMessage(3, 2, 101, 101, "private", "docs"))
-            await controller._handle_message(IncomingMessage(4, 3, 101, 101, "private", "https://example.test/mcp"))
+            await controller._handle_message(message_event(3, 2, 101, 101, "private", "docs"))
+            await controller._handle_message(message_event(4, 3, 101, 101, "private", "https://example.test/mcp"))
             await controller._handle_callback(
-                IncomingCallback(5, "oauth", 101, 101, picker.message_id, f"mc:{picker.token}:auth:oauth")
+                callback_event(5, "oauth", 101, 101, picker.message_id, f"mc:{picker.token}:auth:oauth")
             )
             self.assertEqual(wizard.stage, "confirm")
             self.assertNotIn("token=", controller._mcp_add_summary(wizard))
             await controller._handle_callback(
-                IncomingCallback(6, "confirm", 101, 101, picker.message_id, f"mc:{picker.token}:add_confirm")
+                callback_event(6, "confirm", 101, 101, picker.message_id, f"mc:{picker.token}:add_confirm")
             )
 
         self.assertEqual(codex.http_added, [("docs", "https://example.test/mcp", "oauth", None)])
@@ -662,19 +670,19 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             controller, telegram, codex = self._controller(Path(temp_dir))
             codex.servers = [McpServer("docs", "connected", "unknown", (), False)]
-            await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/mcp"))
+            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/mcp"))
             picker = controller.mcp_picker
             assert picker is not None and picker.message_id is not None
             await controller._handle_callback(
-                IncomingCallback(2, "server", 101, 101, picker.message_id, f"mc:{picker.token}:server:0")
+                callback_event(2, "server", 101, 101, picker.message_id, f"mc:{picker.token}:server:0")
             )
             await controller._handle_callback(
-                IncomingCallback(3, "disable", 101, 101, picker.message_id, f"mc:{picker.token}:disable")
+                callback_event(3, "disable", 101, 101, picker.message_id, f"mc:{picker.token}:disable")
             )
             self.assertEqual(codex.enabled_calls, [])
             self.assertIn("Отключить MCP-сервер docs", _plain_html(telegram.edits[-1][2]))
             await controller._handle_callback(
-                IncomingCallback(4, "confirm", 101, 101, picker.message_id, f"mc:{picker.token}:action_confirm")
+                callback_event(4, "confirm", 101, 101, picker.message_id, f"mc:{picker.token}:action_confirm")
             )
 
         self.assertEqual(codex.enabled_calls, [("docs", False)])
@@ -693,10 +701,10 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
                 },
             }))
             await asyncio.sleep(0)
-            await controller._handle_message(IncomingMessage(1, 2, 101, 101, "private", "{}"))
+            await controller._handle_message(message_event(1, 2, 101, 101, "private", "{}"))
             self.assertFalse(task.done())
             await controller._handle_message(
-                IncomingMessage(2, 3, 101, 101, "private", '{"project":"demo"}')
+                message_event(2, 3, 101, 101, "private", '{"project":"demo"}')
             )
             response = await task
 
@@ -722,7 +730,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
                 if button["callback_data"].endswith(":accept")
             )
             await controller._handle_mcp_elicitation_callback(
-                IncomingCallback(1, "confirm", 101, 101, pending.message_id, callback),
+                callback_event(1, "confirm", 101, 101, pending.message_id, callback),
                 callback.split(":"),
             )
             response = await task
@@ -741,7 +749,7 @@ class McpTelegramTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             pending = next(iter(controller.pending_mcp_elicitations.values()))
             await controller._handle_mcp_elicitation_callback(
-                IncomingCallback(1, "approve", 101, 101, pending.message_id, f"me:{pending.token}:accept"),
+                callback_event(1, "approve", 101, 101, pending.message_id, f"me:{pending.token}:accept"),
                 ["me", pending.token, "accept"],
             )
             response = await task

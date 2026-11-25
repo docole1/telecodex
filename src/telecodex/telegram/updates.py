@@ -2,168 +2,156 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from aiogram.types import Update
+from aiogram.types import CallbackQuery, Message, Update
 
 from telecodex.documents.models import TelegramAttachment
 from telecodex.documents.processor import AUDIO_EXTENSIONS
 from telecodex.telegram.markdown_input import slice_entities, to_model_markdown, to_model_markdown_slice
 
 
-@dataclass(frozen=True)
-class IncomingMessage:
-    update_id: int
-    message_id: int
-    user_id: int
-    chat_id: int
-    chat_type: str
-    text: str
-    attachments: tuple[TelegramAttachment, ...] = ()
-    media_group_id: str | None = None
-    chat_title: str | None = None
-    group_trigger_checked: bool = False
-    group_trigger_required: bool = False
-    reply_to_user_id: int | None = None
-    model_text: str | None = None
-    entities: tuple[dict[str, Any], ...] = ()
-
-    @property
-    def prompt_text(self) -> str:
-        return self.model_text if self.model_text is not None else to_model_markdown(self.text, self.entities)
-
-    def without_prefix(self, prefix_length: int) -> IncomingMessage:
-        text, entities = slice_entities(self.text, self.entities, prefix_length)
-        return IncomingMessage(
-            update_id=self.update_id,
-            message_id=self.message_id,
-            user_id=self.user_id,
-            chat_id=self.chat_id,
-            chat_type=self.chat_type,
-            text=text,
-            attachments=self.attachments,
-            media_group_id=self.media_group_id,
-            chat_title=self.chat_title,
-            group_trigger_checked=self.group_trigger_checked,
-            group_trigger_required=self.group_trigger_required,
-            reply_to_user_id=self.reply_to_user_id,
-            model_text=to_model_markdown(text, entities),
-            entities=entities,
-        )
-
-    def command_argument_markdown(self) -> str:
-        _command, separator, _argument = self.text.partition(" ")
-        if not separator:
-            return ""
-        start = len(_command) + 1
-        end = len(self.text.rstrip())
-        while start < end and self.text[start].isspace():
-            start += 1
-        return to_model_markdown_slice(self.text, self.entities, start, end)
-
-
-@dataclass(frozen=True)
-class IncomingCallback:
-    update_id: int
-    callback_id: str
-    user_id: int
-    chat_id: int
-    message_id: int
-    data: str
-
-
-IncomingUpdate = IncomingMessage | IncomingCallback
+TelegramEvent = Message | CallbackQuery
 
 
 def parse_update(
     update: dict[str, Any],
     *,
     model_text: str | None = None,
-) -> IncomingUpdate | None:
-    update_id = update.get("update_id")
-    if not isinstance(update_id, int):
+) -> TelegramEvent | None:
+    try:
+        typed_update = Update.model_validate(_normalize_update_for_aiogram(update))
+    except Exception:
         return None
-
-    message = update.get("message")
-    if isinstance(message, dict):
-        user = message.get("from", {})
-        chat = message.get("chat", {})
-        text = message.get("text")
-        entities_value = message.get("entities")
-        user_id = user.get("id") if isinstance(user, dict) else None
-        chat_id = chat.get("id") if isinstance(chat, dict) else None
-        message_id = message.get("message_id")
-        chat_type = chat.get("type") if isinstance(chat, dict) else None
-        chat_title = chat.get("title") if isinstance(chat, dict) else None
-        reply = message.get("reply_to_message")
-        reply_user = reply.get("from") if isinstance(reply, dict) else None
-        reply_to_user_id = reply_user.get("id") if isinstance(reply_user, dict) else None
-        attachments = _parse_message_attachments(message)
-        caption = message.get("caption")
-        if not isinstance(text, str):
-            text = caption if isinstance(caption, str) else ""
-            entities_value = message.get("caption_entities")
-        entities = tuple(
-            dict(entity)
-            for entity in entities_value
-            if isinstance(entity, dict)
-        ) if isinstance(entities_value, list) else ()
-        media_group_id = message.get("media_group_id")
-        if not isinstance(media_group_id, str):
-            media_group_id = None
-        if (
-            all(isinstance(value, int) for value in (message_id, user_id, chat_id))
-            and (isinstance(text, str) or attachments)
-        ):
-            return IncomingMessage(
-                update_id,
-                message_id,
-                user_id,
-                chat_id,
-                str(chat_type or ""),
-                text,
-                attachments,
-                media_group_id,
-                chat_title if isinstance(chat_title, str) else None,
-                False,
-                False,
-                reply_to_user_id if isinstance(reply_to_user_id, int) else None,
-                model_text if model_text is not None else to_model_markdown(text, entities),
-                entities,
-            )
-        return None
-
-    callback = update.get("callback_query")
-    if isinstance(callback, dict):
-        user = callback.get("from", {})
-        message = callback.get("message", {})
-        chat = message.get("chat", {}) if isinstance(message, dict) else {}
-        user_id = user.get("id") if isinstance(user, dict) else None
-        chat_id = chat.get("id") if isinstance(chat, dict) else None
-        message_id = message.get("message_id") if isinstance(message, dict) else None
-        callback_id = callback.get("id")
-        data = callback.get("data")
-        if (
-            isinstance(user_id, int)
-            and isinstance(chat_id, int)
-            and isinstance(message_id, int)
-            and isinstance(callback_id, str)
-            and isinstance(data, str)
-        ):
-            return IncomingCallback(update_id, callback_id, user_id, chat_id, message_id, data)
-    return None
+    return parse_aiogram_update(typed_update, model_text=model_text)
 
 
 def parse_aiogram_update(
     update: Update,
     *,
     model_text: str | None = None,
-) -> IncomingUpdate | None:
-    """Adapt an Aiogram update to TeleCodex's framework-neutral DTOs."""
-    raw_update = aiogram_update_to_dict(update)
-    return parse_update(raw_update, model_text=model_text)
+) -> TelegramEvent | None:
+    """Return an Aiogram event enriched with TeleCodex routing context."""
+    if not isinstance(update.update_id, int):
+        return None
+    message = update.message
+    if message is not None:
+        user_id = message.from_user.id if message.from_user is not None else None
+        text = message.text if message.text is not None else message.caption or ""
+        entities = message.entities if message.text is not None else message.caption_entities
+        raw_message = message.model_dump(mode="json", by_alias=True, exclude_none=True)
+        attachments = _parse_message_attachments(raw_message)
+        if user_id is None or (not text and not attachments):
+            return None
+        reply_user = (
+            message.reply_to_message.from_user
+            if message.reply_to_message is not None
+            else None
+        )
+        markdown = model_text if model_text is not None else to_model_markdown(text, entities)
+        return message.model_copy(
+            update={
+                "text": text,
+                "entities": list(entities or []),
+                "update_id": update.update_id,
+                "user_id": user_id,
+                "chat_id": message.chat.id,
+                "chat_type": message.chat.type,
+                "chat_title": message.chat.title,
+                "attachments": attachments,
+                "group_trigger_checked": False,
+                "group_trigger_required": False,
+                "reply_to_user_id": reply_user.id if reply_user is not None else None,
+                "model_text": markdown,
+                "prompt_text": markdown,
+            }
+        )
+
+    callback = update.callback_query
+    if callback is None or callback.data is None:
+        return None
+    message = callback.message
+    if message is None:
+        return None
+    return callback.model_copy(
+        update={
+            "update_id": update.update_id,
+            "callback_id": callback.id,
+            "user_id": callback.from_user.id,
+            "chat_id": message.chat.id,
+            "message_id": message.message_id,
+            "data": callback.data,
+        }
+    )
+
+
+def command_argument_markdown(message: Message) -> str:
+    text = message.text or message.caption or ""
+    _command, separator, _argument = text.partition(" ")
+    if not separator:
+        return ""
+    start = len(_command) + 1
+    end = len(text.rstrip())
+    while start < end and text[start].isspace():
+        start += 1
+    entities = message.entities if message.text is not None else message.caption_entities
+    return to_model_markdown_slice(text, entities, start, end)
+
+
+def without_message_prefix(message: Message, prefix_length: int) -> Message:
+    text = message.text or message.caption or ""
+    entities = message.entities if message.text is not None else message.caption_entities
+    text, sliced_entities = slice_entities(text, entities, prefix_length)
+    prompt_text = to_model_markdown(text, sliced_entities)
+    return message.model_copy(
+        update={
+            "text": text,
+            "entities": list(sliced_entities),
+            "model_text": prompt_text,
+            "prompt_text": prompt_text,
+        }
+    )
+
+
+def copy_message(message: Message, **updates: Any) -> Message:
+    return message.model_copy(update=updates)
+
+
+def _normalize_update_for_aiogram(update: dict[str, Any]) -> dict[str, Any]:
+    """Fill fields required by Aiogram when reading older minimal test fixtures."""
+    normalized = deepcopy(update)
+
+    def normalize_message(message: Any) -> None:
+        if not isinstance(message, dict):
+            return
+        message.setdefault("date", 0)
+        sender = message.get("from")
+        if isinstance(sender, dict):
+            sender.setdefault("is_bot", False)
+            sender.setdefault("first_name", "Telegram user")
+        for field in ("voice", "audio", "document"):
+            media = message.get(field)
+            if isinstance(media, dict):
+                media.setdefault("file_unique_id", media.get("file_id", "test-file"))
+        photos = message.get("photo")
+        if isinstance(photos, list):
+            for photo in photos:
+                if isinstance(photo, dict):
+                    photo.setdefault("file_unique_id", photo.get("file_id", "test-photo"))
+        normalize_message(message.get("reply_to_message"))
+
+    normalize_message(normalized.get("message"))
+    callback = normalized.get("callback_query")
+    if isinstance(callback, dict):
+        sender = callback.get("from")
+        if isinstance(sender, dict):
+            sender.setdefault("is_bot", False)
+            sender.setdefault("first_name", "Telegram user")
+        callback.setdefault("chat_instance", "test-chat-instance")
+        normalize_message(callback.get("message"))
+    return normalized
 
 
 def aiogram_update_to_dict(update: Update) -> dict[str, Any]:

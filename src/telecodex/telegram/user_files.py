@@ -9,12 +9,14 @@ import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import CallbackQuery, FSInputFile
+
 from telecodex.telegram.activity import utf16_length
-from telecodex.telegram.api import TelegramAPI, TelegramApiError
 from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT, truncate
 from telecodex.telegram.pagination import PAGE_SIZE, keyboard, navigation_row, page_count, two_column_rows
 from telecodex.telegram.pickers import FilesPicker
-from telecodex.telegram.updates import IncomingCallback
 from telecodex.workspace_files import (
     WorkspaceEntry,
     WorkspaceFileBrowser,
@@ -30,7 +32,7 @@ class TelegramWorkspaceFilesController:
     def __init__(
         self,
         *,
-        telegram: TelegramAPI,
+        telegram: Bot,
         codex: Callable[[], Any],
         workspace_root: Callable[[], Path],
         text: Callable[..., str],
@@ -87,8 +89,8 @@ class TelegramWorkspaceFilesController:
         text = self._files_picker_text(picker)
         markup = self._files_picker_keyboard(picker)
         if send_new:
-            message = await self.telegram.send_message(chat_id, text, markup)
-            message_id = message.get("message_id")
+            message = await self.telegram.send_message(chat_id, text, reply_markup=markup)
+            message_id = message.message_id
             if isinstance(message_id, int):
                 picker.message_id = message_id
                 self.picker = picker
@@ -169,7 +171,7 @@ class TelegramWorkspaceFilesController:
 
     async def _handle_files_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.picker
@@ -180,7 +182,7 @@ class TelegramWorkspaceFilesController:
             or incoming.message_id != picker.message_id
             or incoming.user_id != picker.owner_user_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("files.label.stale"))
             return
         action = parts[2]
         if action == "p" and len(parts) == 4:
@@ -189,11 +191,11 @@ class TelegramWorkspaceFilesController:
             except ValueError:
                 page = -1
             if not 0 <= page < page_count(len(picker.entries)):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("files.label.stale"))
                 return
             picker.page = page
             picker.selected_index = None
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -202,15 +204,15 @@ class TelegramWorkspaceFilesController:
             )
             return
         if action == "i" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             return
         if action == "u" and len(parts) == 3:
             if picker.current_path == self._workspace_root():
-                await self.telegram.answer_callback(incoming.callback_id)
+                await self.telegram.answer_callback_query(incoming.callback_id)
                 return
             picker.current_path = picker.current_path.parent
             picker.page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             if not await self._load_files_picker(incoming.chat_id, picker):
                 await self.telegram.send_message(incoming.chat_id, self._text("files.label.read_failed"))
             return
@@ -222,18 +224,18 @@ class TelegramWorkspaceFilesController:
                     raise ValueError
                 entry = picker.entries[index]
             except (ValueError, IndexError):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("files.label.stale"))
                 return
             if action == "o" and entry.kind == "directory":
                 picker.current_path = entry.path
                 picker.page = 0
-                await self.telegram.answer_callback(incoming.callback_id)
+                await self.telegram.answer_callback_query(incoming.callback_id)
                 if not await self._load_files_picker(incoming.chat_id, picker):
                     await self.telegram.send_message(incoming.chat_id, self._text("files.label.read_failed"))
                 return
             if action == "f" and entry.kind == "file":
                 picker.selected_index = index
-                await self.telegram.answer_callback(incoming.callback_id)
+                await self.telegram.answer_callback_query(incoming.callback_id)
                 await self._edit_message(
                     incoming.chat_id,
                     incoming.message_id,
@@ -243,7 +245,7 @@ class TelegramWorkspaceFilesController:
                 return
         if action == "b" and len(parts) == 3 and self._selected_workspace_file(picker):
             picker.selected_index = None
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -253,9 +255,9 @@ class TelegramWorkspaceFilesController:
             return
         entry = self._selected_workspace_file(picker)
         if entry is None or action not in {"d", "v"} or len(parts) != 3:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("files.label.stale"))
             return
-        await self.telegram.answer_callback(incoming.callback_id)
+        await self.telegram.answer_callback_query(incoming.callback_id)
         if action == "v":
             await self._send_workspace_preview(incoming.chat_id, picker, entry)
         else:
@@ -351,15 +353,16 @@ class TelegramWorkspaceFilesController:
             destination = Path(directory) / "download"
             try:
                 filename, path = await asyncio.to_thread(browser.copy_file, entry.path, destination)
+                if not filename or "/" in filename or "\\" in filename or "\0" in filename:
+                    raise ValueError("Workspace filename cannot be sent as a Telegram document")
                 await self.telegram.send_document(
-                    chat_id,
-                    path,
-                    filename,
+                    chat_id=chat_id,
+                    document=FSInputFile(path, filename=filename),
                     reply_to_message_id=picker.message_id,
                 )
             except WorkspaceFileTooLarge:
                 await self.telegram.send_message(chat_id, self._text("files.label.too_large"))
-            except TelegramApiError as exc:
+            except TelegramAPIError as exc:
                 self._log_failure(
                     "Could not send host project file through Telegram",
                     exc,

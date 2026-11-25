@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from aiogram.types import MessageEntity
+from aiogram.types import Message, MessageEntity
+
+from multi_user_test_support import message_event
 
 from telecodex.group_triggers import parse_trigger_words, strip_group_trigger_with_offset
 from telecodex.telegram.markdown_input import to_model_markdown
-from telecodex.telegram.updates import IncomingMessage, parse_update
+from telecodex.telegram.updates import command_argument_markdown, parse_update, without_message_prefix
 
 
 class TelegramMarkdownConversionTests(unittest.TestCase):
@@ -62,7 +64,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, IncomingMessage)
+        self.assertIsInstance(incoming, Message)
         self.assertEqual(incoming.text, "Start the task")  # type: ignore[union-attr]
         self.assertEqual(incoming.prompt_text, "Start the **tas**k")  # type: ignore[union-attr]
 
@@ -81,7 +83,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, IncomingMessage)
+        self.assertIsInstance(incoming, Message)
         self.assertEqual(incoming.prompt_text, "Review *this*")  # type: ignore[union-attr]
 
     def test_command_argument_keeps_formatting_without_changing_command_parse(self) -> None:
@@ -98,9 +100,9 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             }
         )
 
-        self.assertIsInstance(incoming, IncomingMessage)
+        self.assertIsInstance(incoming, Message)
         self.assertEqual(incoming.text.partition(" ")[0], "/plan")  # type: ignore[union-attr]
-        self.assertEqual(incoming.command_argument_markdown(), "**Write** a careful plan")  # type: ignore[union-attr]
+        self.assertEqual(command_argument_markdown(incoming), "**Write** a careful plan")  # type: ignore[arg-type]
 
     def test_group_trigger_removal_rebases_entities(self) -> None:
         trigger = "codex"
@@ -108,7 +110,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
         stripped = strip_group_trigger_with_offset(text, parse_trigger_words(trigger))
         self.assertEqual(stripped, ("build this", 6))
 
-        incoming = IncomingMessage(
+        incoming = message_event(
             update_id=1,
             message_id=2,
             user_id=101,
@@ -117,7 +119,7 @@ class TelegramIncomingMarkdownTests(unittest.TestCase):
             text=text,
             entities=({"type": "bold", "offset": 6, "length": 5},),
         )
-        without_trigger = incoming.without_prefix(stripped[1])  # type: ignore[index]
+        without_trigger = without_message_prefix(incoming, stripped[1])  # type: ignore[arg-type,index]
 
         self.assertEqual(without_trigger.text, "build this")
         self.assertEqual(without_trigger.prompt_text, "**build** this")

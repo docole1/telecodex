@@ -6,7 +6,7 @@ import asyncio
 import secrets
 from typing import Any, Awaitable, Callable
 
-from telecodex.telegram.api import TelegramAPI
+from aiogram import Bot
 from telecodex.telegram.pagination import two_column_rows
 from telecodex.telegram.user_state import PendingApproval, PendingUserInput
 
@@ -17,7 +17,7 @@ class TelegramCodexPromptController:
     def __init__(
         self,
         *,
-        telegram: TelegramAPI,
+        telegram: Bot,
         chat_id: int,
         is_group: bool,
         is_attached: Callable[[], bool],
@@ -111,7 +111,7 @@ class TelegramCodexPromptController:
                 filesystem_note=self._text("permissions.values.filesystem_note"),
                 reason=reason,
             ),
-            {
+            reply_markup={
                 "inline_keyboard": two_column_rows(
                     [
                         {"text": self._text("approval.label.allow_task"), "callback_data": f"ap:{token}:once"},
@@ -186,7 +186,7 @@ class TelegramCodexPromptController:
             + [[{"text": self._text("common.buttons.decline"), "callback_data": f"ap:{token}:deny"}]]
         }
         await self._pause_typing()
-        message = await self.telegram.send_message(self.chat_id, text, keyboard)
+        message = await self.telegram.send_message(self.chat_id, text, reply_markup=keyboard)
         if self.is_group and not self.attached:
             return "cancel"
         self._codex().add_pending_prompt(message["message_id"])

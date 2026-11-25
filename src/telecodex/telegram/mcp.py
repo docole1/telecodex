@@ -6,6 +6,8 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from aiogram.types import CallbackQuery, Message
+
 from telecodex.codex.mcp import (
     McpServer,
     validate_env_name,
@@ -27,7 +29,7 @@ from telecodex.telegram.pagination import (
     two_column_rows,
 )
 from telecodex.telegram.pickers import McpAddWizard, McpPicker
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage, parse_command
+from telecodex.telegram.updates import parse_command
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +80,9 @@ class McpTelegramMixin:
         message = await self.telegram.send_message(
             chat_id,
             self._mcp_picker_text(picker),
-            self._mcp_picker_keyboard(picker),
+            reply_markup=self._mcp_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.mcp_picker = picker
@@ -123,7 +125,7 @@ class McpTelegramMixin:
         if picker is not None and picker.message_id is not None:
             await self._edit_message(self.chat_id, picker.message_id, message, markup)
         else:
-            await self.telegram.send_message(chat_id, message, markup)
+            await self.telegram.send_message(chat_id, message, reply_markup=markup)
 
     def _mcp_picker_text(self, picker: McpPicker) -> str:
         wizard = self.mcp_add_wizard
@@ -372,9 +374,9 @@ class McpTelegramMixin:
             message = await self.telegram.send_message(
                 chat_id,
                 self._mcp_picker_text(picker),
-                self._mcp_picker_keyboard(picker),
+                reply_markup=self._mcp_picker_keyboard(picker),
             )
-            message_id = message.get("message_id")
+            message_id = message.message_id
             if not isinstance(message_id, int):
                 self.mcp_add_wizard = None
                 return
@@ -446,7 +448,7 @@ class McpTelegramMixin:
             )
         return self._text("mcp.label.confirm_add", name=wizard.name, detail=detail)
 
-    async def _consume_mcp_dialog_input(self, incoming: IncomingMessage) -> bool:
+    async def _consume_mcp_dialog_input(self, incoming: Message) -> bool:
         parsed = parse_command(incoming.text) if not incoming.attachments else None
         if parsed is not None and parsed[0] in {"stop", "status"}:
             return False
@@ -473,7 +475,7 @@ class McpTelegramMixin:
             return True
         return False
 
-    async def _handle_mcp_wizard_input(self, incoming: IncomingMessage, wizard: McpAddWizard) -> None:
+    async def _handle_mcp_wizard_input(self, incoming: Message, wizard: McpAddWizard) -> None:
         value = incoming.text.strip()
         if value.casefold() in {"/cancel", "cancel", "отмена"}:
             await self._cancel_mcp_wizard()
@@ -548,34 +550,34 @@ class McpTelegramMixin:
             picker.confirming_remove = False
             await self._refresh_mcp_picker(picker)
 
-    async def _handle_mcp_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+    async def _handle_mcp_callback(self, incoming: CallbackQuery, parts: list[str]) -> None:
         picker = self.mcp_picker
         if picker is None or len(parts) < 3 or parts[1] != picker.token or incoming.message_id != picker.message_id:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
             return
         action = parts[2]
         wizard = self.mcp_add_wizard
         if wizard is not None and wizard.owner_user_id != incoming.user_id:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.owner_only"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.owner_only"))
             return
         if wizard is not None and action in {"stdio", "http"} and wizard.stage == "transport":
             wizard.transport = action
             wizard.stage = "name"
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if wizard is not None and action == "auth" and len(parts) == 4 and wizard.stage == "http_auth":
             auth = parts[3]
             if auth not in {"none", "oauth", "bearer"}:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
                 return
             wizard.auth = auth
             wizard.stage = "bearer_env" if auth == "bearer" else "confirm"
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if action == "cancel":
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             if wizard is not None:
                 await self._cancel_mcp_wizard()
             else:
@@ -585,11 +587,11 @@ class McpTelegramMixin:
                 await self._render_mcp_picker(picker)
             return
         if wizard is not None and action == "add_confirm" and wizard.stage == "confirm":
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.saving"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.saving"))
             await self._save_mcp_wizard(wizard, picker)
             return
         if wizard is not None:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
             return
         if action == "p" and len(parts) == 4 and picker.view in {"servers", "tools"}:
             try:
@@ -604,13 +606,13 @@ class McpTelegramMixin:
                 else 1
             )
             if not 0 <= page < total_pages:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
                 return
             if picker.view == "servers":
                 picker.page = page
             else:
                 picker.tools_page = page
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if action == "server" and len(parts) == 4 and picker.view == "servers":
@@ -620,19 +622,19 @@ class McpTelegramMixin:
                     raise ValueError
                 server = picker.servers[index]
             except (ValueError, IndexError):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
                 return
             picker.selected_name = server.name
             picker.view = "detail"
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if action == "refresh" and picker.view == "servers":
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._refresh_mcp_picker(picker)
             return
         if action == "add" and picker.view == "servers":
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             wizard = McpAddWizard(
                 owner_user_id=incoming.user_id,
                 stage="transport",
@@ -644,42 +646,42 @@ class McpTelegramMixin:
         if action == "tools" and picker.view == "detail":
             picker.view = "tools"
             picker.tools_page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if action == "back":
             picker.view = "servers" if picker.view == "detail" else "detail"
             picker.confirming_remove = False
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         server = self._selected_mcp_server(picker)
         if server is None or picker.view != "detail":
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
             return
         if action == "remove":
             if server.is_plugin:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.plugin_managed_short"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.plugin_managed_short"))
                 return
             picker.confirming_remove = True
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if action in {"enable", "disable", "logout"}:
             if action == "logout" and server.auth_status != "oAuth":
-                await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
                 return
             if action != "logout" and server.is_plugin:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.plugin_managed_short"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.plugin_managed_short"))
                 return
             picker.confirming_action = action
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._render_mcp_picker(picker)
             return
         if action == "action_confirm" and picker.confirming_action:
             confirmed_action = picker.confirming_action
             picker.confirming_action = None
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.saving"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.saving"))
             try:
                 if confirmed_action == "logout":
                     await self._codex().logout_mcp_server(server.name)
@@ -701,7 +703,7 @@ class McpTelegramMixin:
             await self._refresh_mcp_picker(picker)
             return
         if action == "remove_confirm" and picker.confirming_remove:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.removing"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.removing"))
             try:
                 await self._codex().remove_mcp_server(server.name)
                 await self._reload_mcp_after_change()
@@ -718,10 +720,10 @@ class McpTelegramMixin:
             await self._refresh_mcp_picker(picker)
             return
         if action == "login":
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.oauth_starting"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.oauth_starting"))
             await self._start_mcp_oauth_message(self.chat_id, server.name, picker=picker)
             return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.stale"))
+        await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.stale"))
 
     async def _save_mcp_wizard(self, wizard: McpAddWizard, picker: McpPicker) -> None:
         try:
@@ -811,7 +813,7 @@ class McpTelegramMixin:
 
     async def _handle_mcp_form_input(
         self,
-        incoming: IncomingMessage,
+        incoming: Message,
         pending: PendingMcpElicitation,
     ) -> None:
         await self.mcp_elicitation._handle_mcp_form_input(incoming, pending)
@@ -826,7 +828,7 @@ class McpTelegramMixin:
 
     async def _handle_mcp_elicitation_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         await self.mcp_elicitation._handle_mcp_elicitation_callback(incoming, parts)

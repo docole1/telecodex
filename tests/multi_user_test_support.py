@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from aiogram.types import Update
+
 from telecodex.config import AppConfig, ProxySettings, load_config
 from telecodex.codex.command_prompts import GOAL_CONTINUATION_PROMPT
 from telecodex.codex.rpc import RpcError
@@ -38,7 +40,7 @@ from telecodex.i18n import TextCatalog
 from telecodex.shell.runner import ShellResult
 from telecodex.state import PendingTurnState, RuntimeState, RuntimeStateStore, ThreadRuntimeState
 from telecodex.telegram.controller import TelegramController
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage, parse_update
+from telecodex.telegram.updates import parse_aiogram_update
 from telecodex.telegram.user_controller import (
     PendingApproval,
     RunningCommand,
@@ -50,11 +52,111 @@ from telecodex.telegram.activity import (
     image_saved_path,
     web_search_detail,
 )
-from telecodex.telegram.api import TelegramAPI, TelegramApiError
 from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT, split_plain_text
 from telecodex.telegram.pagination import navigation_row, page_count, two_column_rows
 
 _TEXT_CATALOG = TextCatalog()
+
+
+def message_event(
+    update_id: int,
+    message_id: int,
+    user_id: int,
+    chat_id: int,
+    chat_type: str,
+    text: str,
+    *,
+    attachments: tuple[TelegramAttachment, ...] = (),
+    media_group_id: str | None = None,
+    group_trigger_checked: bool = False,
+    group_trigger_required: bool = False,
+    reply_to_user_id: int | None = None,
+    model_text: str | None = None,
+    entities: list[dict[str, Any]] | None = None,
+):
+    raw_message: dict[str, Any] = {
+        "message_id": message_id,
+        "date": 1_700_000_000,
+        "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
+        "chat": {"id": chat_id, "type": chat_type},
+        "text": text,
+    }
+    if entities:
+        raw_message["entities"] = entities
+    if media_group_id is not None:
+        raw_message["media_group_id"] = media_group_id
+    if reply_to_user_id is not None:
+        raw_message["reply_to_message"] = {
+            "message_id": message_id - 1,
+            "date": 1_700_000_000,
+            "from": {"id": reply_to_user_id, "is_bot": False, "first_name": "Reply"},
+            "chat": {"id": chat_id, "type": chat_type},
+            "text": "reply",
+        }
+    for attachment in attachments:
+        media = {
+            "file_id": attachment.file_id,
+            "file_unique_id": f"unique-{attachment.file_id}",
+            "file_size": attachment.file_size,
+        }
+        if attachment.file_name is not None:
+            media["file_name"] = attachment.file_name
+        if attachment.mime_type is not None:
+            media["mime_type"] = attachment.mime_type
+        if attachment.duration_seconds is not None:
+            media["duration"] = attachment.duration_seconds
+        if attachment.kind == "voice":
+            raw_message["voice"] = media
+        elif attachment.kind == "audio":
+            raw_message["audio"] = media
+        elif attachment.kind == "photo":
+            raw_message["photo"] = [media]
+        else:
+            raw_message["document"] = media
+    update = Update.model_validate({"update_id": update_id, "message": raw_message})
+    message = parse_aiogram_update(update, model_text=model_text)
+    if message is None:
+        raise ValueError("Test message did not produce an Aiogram Message")
+    return message.model_copy(
+        update={
+            "attachments": attachments,
+            "group_trigger_checked": group_trigger_checked,
+            "group_trigger_required": group_trigger_required,
+        }
+    )
+
+
+def callback_event(
+    update_id: int,
+    callback_id: str,
+    user_id: int,
+    chat_id: int,
+    message_id: int,
+    data: str,
+    *,
+    chat_type: str = "private",
+):
+    update = Update.model_validate(
+        {
+            "update_id": update_id,
+            "callback_query": {
+                "id": callback_id,
+                "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
+                "chat_instance": "test-chat-instance",
+                "message": {
+                    "message_id": message_id,
+                    "date": 1_700_000_000,
+                    "chat": {"id": chat_id, "type": chat_type},
+                    "text": "test callback",
+                },
+                "data": data,
+            },
+        }
+    )
+    callback = parse_aiogram_update(update)
+    if callback is None:
+        raise ValueError("Test callback did not produce an Aiogram CallbackQuery")
+    return callback
 
 
 def _catalog_text(key: str, **values: Any) -> str:
@@ -74,9 +176,16 @@ BOT_TRIGGER_CYRILLIC = "\u0431\u043e\u0442"
 HELPER_TRIGGER_CYRILLIC = "\u043f\u043e\u043c\u043e\u0449\u043d\u0438\u043a"
 
 
+class FakeSentMessage(dict[str, int]):
+    @property
+    def message_id(self) -> int:
+        return self["message_id"]
+
+
 class FakeTelegram:
     def __init__(self) -> None:
         self.bot_user_id = 999
+        self.id = self.bot_user_id
         self.messages: list[tuple[int, str]] = []
         self.message_entities: list[list[dict[str, Any]]] = []
         self.edits: list[tuple[int, int, str]] = []
@@ -95,28 +204,38 @@ class FakeTelegram:
         self,
         chat_id: int,
         text: str,
-        _reply_markup: Any = None,
+        reply_markup: Any = None,
         reply_to_message_id: int | None = None,
         entities: list[dict[str, Any]] | None = None,
         disable_notification: bool = False,
-    ) -> dict[str, int]:
+    ) -> FakeSentMessage:
         self.messages.append((chat_id, text))
         self.message_entities.append(entities or [])
-        self.reply_markups.append(_reply_markup)
+        self.reply_markups.append(reply_markup)
         self.replies.append(reply_to_message_id)
         self.notification_flags.append(disable_notification)
         message_id = self.next_message_id
         self.next_message_id += 1
-        return {"message_id": message_id}
+        return FakeSentMessage(message_id=message_id)
 
     async def send_rich_message(
         self,
         chat_id: int,
-        markdown: str,
+        rich_message: Any,
         *,
-        reply_to_message_id: int | None = None,
+        reply_parameters: Any = None,
         disable_notification: bool = False,
-    ) -> dict[str, int]:
+    ) -> FakeSentMessage:
+        markdown = (
+            rich_message.get("markdown", "")
+            if isinstance(rich_message, dict)
+            else getattr(rich_message, "markdown", "")
+        )
+        reply_to_message_id = (
+            reply_parameters.message_id
+            if reply_parameters is not None
+            else None
+        )
         self.rich_messages.append((chat_id, markdown, disable_notification))
         return await self.send_message(
             chat_id,
@@ -128,18 +247,21 @@ class FakeTelegram:
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.actions.append((chat_id, action))
 
+    async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        self.callbacks.append((callback_query_id, text or ""))
+
     async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
         self.callbacks.append((callback_id, text or ""))
 
-    async def edit_message(
+    async def edit_message_text(
         self,
         chat_id: int,
         message_id: int,
         text: str,
-        _reply_markup: Any = None,
+        reply_markup: Any = None,
     ) -> None:
         self.edits.append((chat_id, message_id, text))
-        self.edit_markups.append(_reply_markup)
+        self.edit_markups.append(reply_markup)
         return None
 
     async def edit_message_reply_markup(
@@ -157,13 +279,14 @@ class FakeTelegram:
     async def send_document(
         self,
         chat_id: int,
-        path: Path,
-        filename: str,
+        document: Any,
         *,
         reply_to_message_id: int | None = None,
-    ) -> dict[str, int]:
+    ) -> FakeSentMessage:
+        path = Path(document.path)
+        filename = document.filename
         self.documents.append((chat_id, path, filename, reply_to_message_id))
-        return {"message_id": self.next_message_id}
+        return FakeSentMessage(message_id=self.next_message_id)
 
 
 class FakeAudioTranscriber:

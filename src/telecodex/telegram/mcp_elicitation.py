@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
-from telecodex.telegram.api import TelegramAPI
+from aiogram import Bot
+from aiogram.types import CallbackQuery, Message
+
 from telecodex.telegram.pagination import keyboard
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage
 
 
 @dataclass
@@ -30,7 +31,7 @@ class McpElicitationController:
     def __init__(
         self,
         *,
-        telegram: TelegramAPI,
+        telegram: Bot,
         chat_id: int,
         text: Callable[..., str],
         truncate: Callable[..., str],
@@ -126,8 +127,8 @@ class McpElicitationController:
                 {"text": self._text("common.buttons.decline"), "callback_data": f"me:{token}:decline"},
                 {"text": self._text("mcp.label.elicitation_cancel"), "callback_data": f"me:{token}:cancel"},
             ]])
-        message = await self.telegram.send_message(self.chat_id, prompt, markup)
-        message_id = message.get("message_id")
+        message = await self.telegram.send_message(self.chat_id, prompt, reply_markup=markup)
+        message_id = message.message_id
         if not isinstance(message_id, int):
             return {"action": "cancel"}
         pending.message_id = message_id
@@ -197,7 +198,7 @@ class McpElicitationController:
 
     async def _handle_mcp_form_input(
         self,
-        incoming: IncomingMessage,
+        incoming: Message,
         pending: PendingMcpElicitation,
     ) -> None:
         if incoming.attachments:
@@ -291,27 +292,27 @@ class McpElicitationController:
 
     async def _handle_mcp_elicitation_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         if len(parts) != 3:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.elicitation_closed"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.elicitation_closed"))
             return
         pending = self.pending.get(parts[1])
         if pending is None or pending.message_id != incoming.message_id or pending.future.done():
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.elicitation_closed"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.elicitation_closed"))
             return
         action = parts[2]
         if action not in {"accept", "decline", "cancel"} or (
             action == "accept" and pending.mode not in {"url", "form_confirmation"}
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mcp.label.elicitation_closed"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mcp.label.elicitation_closed"))
             return
         response = {"action": action}
         if action == "accept" and pending.mode == "form_confirmation":
             response["content"] = {}
         pending.future.set_result(response)
-        await self.telegram.answer_callback(incoming.callback_id)
+        await self.telegram.answer_callback_query(incoming.callback_id)
         await self._edit_message(
             incoming.chat_id,
             incoming.message_id,

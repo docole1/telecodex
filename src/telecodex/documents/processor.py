@@ -9,18 +9,19 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
+
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 
 from telecodex.documents.models import PreparedAttachment, TelegramAttachment
 from telecodex.logging_config import log_exception
 from telecodex.telegram.api import (
-    TelegramApiError,
+    TelegramFileDownloadError,
     TelegramFileStorageError,
     TelegramFileTooLargeError,
+    download_telegram_file,
 )
-
-if TYPE_CHECKING:
-    from telecodex.telegram.api import TelegramAPI
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class AttachmentProcessingError(RuntimeError):
 
 
 async def prepare_attachments(
-    telegram: TelegramAPI,
+    bot: Bot,
     attachments: Sequence[TelegramAttachment],
     working_directory: Path,
     user_id: int,
@@ -55,7 +56,8 @@ async def prepare_attachments(
 
         path = attachment_directory / _stored_name(name)
         try:
-            await telegram.download_file(
+            await download_telegram_file(
+                bot,
                 attachment.file_id,
                 path,
                 max_bytes=MAX_ATTACHMENT_BYTES,
@@ -66,7 +68,10 @@ async def prepare_attachments(
         except TelegramFileStorageError as exc:
             path.unlink(missing_ok=True)
             raise AttachmentProcessingError("documents.label.save_failed", filename=name) from exc
-        except TelegramApiError as exc:
+        except TelegramFileDownloadError as exc:
+            path.unlink(missing_ok=True)
+            raise AttachmentProcessingError("documents.label.download_failed", filename=name) from exc
+        except TelegramAPIError as exc:
             path.unlink(missing_ok=True)
             raise AttachmentProcessingError("documents.label.download_failed", filename=name) from exc
 

@@ -7,13 +7,14 @@ import re
 import secrets
 from typing import Any, Callable
 
+from aiogram import Bot
+from aiogram.types import CallbackQuery
+
 from telecodex.codex.types import CodexBackgroundTerminal
 from telecodex.logging_config import redact_text
-from telecodex.telegram.api import TelegramAPI
 from telecodex.telegram.formatting import truncate
 from telecodex.telegram.pagination import PAGE_SIZE, keyboard, navigation_row, page_count, two_column_rows
 from telecodex.telegram.pickers import ProcessesPicker
-from telecodex.telegram.updates import IncomingCallback
 
 _SENSITIVE_COMMAND_ARGUMENT = re.compile(
     r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|credential|auth)(?:=|\s+))"
@@ -27,7 +28,7 @@ class TelegramProcessesController:
     def __init__(
         self,
         *,
-        telegram: TelegramAPI,
+        telegram: Bot,
         codex: Callable[[], Any],
         text: Callable[..., str],
         texts: Any,
@@ -72,9 +73,9 @@ class TelegramProcessesController:
         message = await self.telegram.send_message(
             chat_id,
             self._processes_picker_text(picker),
-            self._processes_picker_keyboard(picker),
+            reply_markup=self._processes_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.picker = picker
@@ -194,7 +195,7 @@ class TelegramProcessesController:
 
     async def _refresh_process_picker(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         picker: ProcessesPicker,
     ) -> None:
         picker.terminals = await self._codex().list_background_terminals()
@@ -219,7 +220,7 @@ class TelegramProcessesController:
 
     async def _handle_processes_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.picker
@@ -230,7 +231,7 @@ class TelegramProcessesController:
             or incoming.message_id != picker.message_id
             or self._codex().state.thread_id != picker.thread_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))
             return
 
         action = parts[2]
@@ -240,10 +241,10 @@ class TelegramProcessesController:
             except ValueError:
                 page = -1
             if page < 0 or page >= page_count(len(picker.terminals)):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))
                 return
             picker.page = page
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -252,7 +253,7 @@ class TelegramProcessesController:
             )
             return
         if action == "i" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             return
         if action == "v" and len(parts) == 4:
             try:
@@ -260,7 +261,7 @@ class TelegramProcessesController:
             except ValueError:
                 index = -1
             if index < 0 or index >= len(picker.terminals):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))
                 return
             process_id = picker.terminals[index].process_id
             try:
@@ -276,11 +277,11 @@ class TelegramProcessesController:
                 )
                 terminal = None
             if terminal is None:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))
                 return
             picker.terminals = terminals
             picker.selected_process_id = process_id
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -305,7 +306,7 @@ class TelegramProcessesController:
                     self._text("ps.label.list_failed"),
                     {"inline_keyboard": []},
                 )
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             return
 
         if action == "s" and len(parts) == 3 and picker.selected_process_id:
@@ -316,16 +317,16 @@ class TelegramProcessesController:
                     None,
                 )
                 if selected is None:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+                    await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))
                     return
                 stopped = await self._codex().terminate_background_terminal(
                     picker.selected_process_id
                 )
                 if not stopped:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+                    await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))
                     return
                 await self._refresh_process_picker(incoming, picker)
-                await self.telegram.answer_callback(
+                await self.telegram.answer_callback_query(
                     incoming.callback_id,
                     self._text("ps.label.stopped"),
                 )
@@ -337,9 +338,9 @@ class TelegramProcessesController:
                     rpc_method="thread/backgroundTerminals/terminate",
                     level=logging.WARNING,
                 )
-                await self.telegram.answer_callback(
+                await self.telegram.answer_callback_query(
                     incoming.callback_id,
                     self._text("ps.label.action_failed"),
                 )
             return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
+        await self.telegram.answer_callback_query(incoming.callback_id, self._text("ps.label.stale"))

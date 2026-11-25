@@ -8,10 +8,11 @@ from telecodex.codex.session import CodexBackgroundTerminal, CodexModel, CodexRe
 from telecodex.config import AppConfig
 from telecodex.state import PendingTurnState, RuntimeState, RuntimeStateStore
 from telecodex.telegram.pagination import navigation_row, page_count, two_column_rows
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage
 from telecodex.telegram.user_controller import TelegramUserController
 
 from multi_user_test_support import (
+    callback_event,
+    message_event,
     FakeAppServer,
     FakeCodex,
     FakeTelegram,
@@ -46,7 +47,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.permission_mode = "ask"
 
             await controller._handle_message(
-                IncomingMessage(1, 83, 101, 101, "private", "/permissions")
+                message_event(1, 83, 101, 101, "private", "/permissions")
             )
 
             self.assertEqual(len(telegram.messages), 1)
@@ -63,7 +64,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.state.thread_id = "idle-thread"
 
             await controller._handle_message(
-                IncomingMessage(1, 84, 101, 101, "private", "/compact")
+                message_event(1, 84, 101, 101, "private", "/compact")
             )
             await controller._finish_typing()
 
@@ -94,7 +95,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             )
             for update_id, command in enumerate(commands, start=1):
                 await controller._handle_message(
-                    IncomingMessage(update_id, 100 + update_id, 101, 101, "private", command)
+                    message_event(update_id, 100 + update_id, 101, 101, "private", command)
                 )
 
             self.assertEqual(codex.renamed_chat_name, "active-test")
@@ -110,7 +111,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             codex.is_busy = True
 
             await controller._handle_message(
-                IncomingMessage(1, 120, 101, 101, "private", "/fork")
+                message_event(1, 120, 101, 101, "private", "/fork")
             )
 
             self.assertFalse(codex.forked)
@@ -135,7 +136,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             await controller._send_to_codex(101, "queued before recover", 79)
 
             await controller._handle_message(
-                IncomingMessage(1, 80, 101, 101, "private", "/recover")
+                message_event(1, 80, 101, 101, "private", "/recover")
             )
 
             pending = controller.pending_chat_recovery
@@ -147,7 +148,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([len(row) for row in recovery_rows], [1, 1])
             cancel_data = recovery_rows[1][0]["callback_data"]
             await controller._handle_callback(
-                IncomingCallback(2, "cancel-recovery", 101, 101, pending.message_id, cancel_data)  # type: ignore[union-attr]
+                callback_event(2, "cancel-recovery", 101, 101, pending.message_id, cancel_data)  # type: ignore[union-attr]
             )
 
             self.assertIsNone(controller.pending_chat_recovery)
@@ -185,13 +186,13 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             )
 
             await controller._handle_message(
-                IncomingMessage(1, 81, 101, 101, "private", "/recover")
+                message_event(1, 81, 101, 101, "private", "/recover")
             )
             pending = controller.pending_chat_recovery
             self.assertIsNotNone(pending)
             reset_data = telegram.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
             await controller._handle_callback(
-                IncomingCallback(2, "inspect-recovery", 101, 101, pending.message_id, reset_data)  # type: ignore[union-attr]
+                callback_event(2, "inspect-recovery", 101, 101, pending.message_id, reset_data)  # type: ignore[union-attr]
             )
 
             pending = controller.pending_chat_recovery
@@ -200,13 +201,13 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("python worker.py", telegram.edits[-1][2])
             self.assertNotIn("secret-value", telegram.edits[-1][2])
             await controller._handle_message(
-                IncomingMessage(3, 82, 101, 101, "private", "send another task")
+                message_event(3, 82, 101, 101, "private", "send another task")
             )
             self.assertEqual(codex.messages, [])
 
             apply_data = telegram.edit_markups[-1]["inline_keyboard"][0][0]["callback_data"]
             await controller._handle_callback(
-                IncomingCallback(4, "apply-recovery", 101, 101, pending.message_id, apply_data)  # type: ignore[union-attr]
+                callback_event(4, "apply-recovery", 101, 101, pending.message_id, apply_data)  # type: ignore[union-attr]
             )
 
             self.assertIsNone(controller.pending_chat_recovery)
@@ -281,7 +282,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             controller.bind_codex(codex)  # type: ignore[arg-type]
 
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, 101, "private", "/delete")
+                message_event(1, 1, 101, 101, "private", "/delete")
             )
             confirmation = controller.delete_confirmation
             self.assertIsNotNone(confirmation)
@@ -289,7 +290,7 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(codex.deleted_thread)
 
             await controller._handle_callback(
-                IncomingCallback(
+                callback_event(
                     2,
                     "cancel-delete",
                     101,
@@ -303,12 +304,12 @@ class ThreadCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
 
             codex.state.thread_id = "thread-to-delete"
             await controller._handle_message(
-                IncomingMessage(3, 3, 101, 101, "private", "/delete")
+                message_event(3, 3, 101, 101, "private", "/delete")
             )
             confirmation = controller.delete_confirmation
             self.assertIsNotNone(confirmation)
             await controller._handle_callback(
-                IncomingCallback(
+                callback_event(
                     4,
                     "confirm-delete",
                     101,
@@ -502,13 +503,13 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             controller = TelegramUserController(config, telegram, object(), 101)  # type: ignore[arg-type]
             controller.bind_codex(codex)  # type: ignore[arg-type]
 
-            await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/model"))
+            await controller._handle_message(message_event(1, 1, 101, 101, "private", "/model"))
             picker = controller.model_picker
             self.assertIsNotNone(picker)
             message_id = picker.message_id  # type: ignore[union-attr]
             token = picker.token  # type: ignore[union-attr]
             await controller._handle_callback(
-                IncomingCallback(2, "choose-luna", 101, 101, message_id, f"m:{token}:s:0")
+                callback_event(2, "choose-luna", 101, 101, message_id, f"m:{token}:s:0")
             )
 
             self.assertIsNone(codex.state.selected_model)
@@ -523,22 +524,22 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             effort_keyboard = telegram.edit_markups[-1]
             self.assertEqual(effort_keyboard["inline_keyboard"][0][0]["callback_data"], f"m:{token}:d")
             await controller._handle_callback(
-                IncomingCallback(3, "choose-high", 101, 101, message_id, f"m:{token}:e:1")
+                callback_event(3, "choose-high", 101, 101, message_id, f"m:{token}:e:1")
             )
 
             self.assertEqual((codex.state.selected_model, codex.state.selected_effort), ("gpt-6-luna", "high"))
             self.assertEqual(telegram.edits[-1][1], message_id)
 
             await controller._handle_callback(
-                IncomingCallback(4, "choose-luna-again", 101, 101, message_id, f"m:{token}:s:0")
+                callback_event(4, "choose-luna-again", 101, 101, message_id, f"m:{token}:s:0")
             )
             await controller._handle_callback(
-                IncomingCallback(5, "choose-default", 101, 101, message_id, f"m:{token}:d")
+                callback_event(5, "choose-default", 101, 101, message_id, f"m:{token}:d")
             )
             self.assertEqual((codex.state.selected_model, codex.state.selected_effort), ("gpt-6-luna", "medium"))
 
             await controller._handle_callback(
-                IncomingCallback(6, "reset-model", 101, 101, message_id, f"m:{token}:r")
+                callback_event(6, "reset-model", 101, 101, message_id, f"m:{token}:r")
             )
             self.assertEqual((codex.state.selected_model, codex.state.selected_effort), (None, None))
 
@@ -568,7 +569,7 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             controller.bind_codex(codex)  # type: ignore[arg-type]
 
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, 101, "private", "/model")
+                message_event(1, 1, 101, 101, "private", "/model")
             )
 
             text = telegram.messages[-1][1]
@@ -605,7 +606,7 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             controller.bind_codex(codex)  # type: ignore[arg-type]
 
             await controller._handle_message(
-                IncomingMessage(1, 1, 101, 101, "private", "/model")
+                message_event(1, 1, 101, 101, "private", "/model")
             )
 
             picker = controller.model_picker
@@ -616,7 +617,7 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([button["text"] for button in first_pager], ["«", "1/2", "»"])
             self.assertEqual(first_pager[2]["callback_data"], f"m:{picker.token}:p:1")
             await controller._handle_callback(
-                IncomingCallback(
+                callback_event(
                     2,
                     "current-model-page",
                     101,
@@ -629,7 +630,7 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(telegram.edits, [])
 
             await controller._handle_callback(
-                IncomingCallback(
+                callback_event(
                     3,
                     "next-model-page",
                     101,
@@ -643,7 +644,7 @@ class ModelEffortSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second_pager[0]["callback_data"], f"m:{picker.token}:p:0")
 
             await controller._handle_callback(
-                IncomingCallback(
+                callback_event(
                     4,
                     "previous-model-page",
                     101,

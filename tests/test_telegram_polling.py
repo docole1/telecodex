@@ -183,10 +183,10 @@ class PollingRequestMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 class TeleCodexAiogramPollingTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_delegates_polling_and_serializes_updates_in_dispatcher(self) -> None:
         service = object.__new__(TeleCodexService)
-        bot = object()
+        bot = SimpleNamespace(session=SimpleNamespace(close=AsyncMock()))
         dispatcher = SimpleNamespace(start_polling=AsyncMock())
         service.telegram_updates = SimpleNamespace(dispatcher=dispatcher)
-        service.telegram = SimpleNamespace(bot=bot, close=AsyncMock())
+        service.telegram = bot
         service._recovery_supervisor = SimpleNamespace(close=AsyncMock())
         service._watchdog_task = None
         service.media_groups = SimpleNamespace(close=AsyncMock())
@@ -206,4 +206,4 @@ class TeleCodexAiogramPollingTests(unittest.IsolatedAsyncioTestCase):
         service._recovery_supervisor.close.assert_awaited_once()
         service.media_groups.close.assert_awaited_once()
         service.controller.close.assert_awaited_once()
-        service.telegram.close.assert_awaited_once()
+        service.telegram.session.close.assert_awaited_once()

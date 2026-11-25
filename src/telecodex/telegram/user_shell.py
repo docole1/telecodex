@@ -7,11 +7,13 @@ import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from aiogram import Bot
+from aiogram.types import Message
+
 from telecodex.config import AppConfig
 from telecodex.shell.runner import EmptyShellCommandError, ShellRunner
 from telecodex.shell.session import ShellOutput, ShellSession
 from telecodex.telegram.activity import utf16_length
-from telecodex.telegram.api import TelegramAPI
 from telecodex.telegram.formatting import TELEGRAM_TEXT_LIMIT, split_plain_text
 
 _TERMINAL_ESCAPE_SEQUENCE = re.compile(
@@ -35,7 +37,7 @@ class TelegramShellController:
         self,
         *,
         config: AppConfig,
-        telegram: TelegramAPI,
+        telegram: Bot,
         shell: ShellRunner,
         chat_id: int,
         is_group: bool,
@@ -78,7 +80,7 @@ class TelegramShellController:
             await session.close()
 
 
-    async def _enter_shell(self, incoming: IncomingMessage) -> None:
+    async def _enter_shell(self, incoming: Message) -> None:
         if self.session is not None and self.session.is_open:
             await self.telegram.send_message(
                 incoming.chat_id,
@@ -120,7 +122,7 @@ class TelegramShellController:
         )
 
 
-    async def _exit_shell(self, incoming: IncomingMessage) -> None:
+    async def _exit_shell(self, incoming: Message) -> None:
         session = self.session
         if session is None:
             await self.telegram.send_message(
@@ -138,7 +140,7 @@ class TelegramShellController:
         )
 
 
-    async def _send_shell_input(self, incoming: IncomingMessage) -> None:
+    async def _send_shell_input(self, incoming: Message) -> None:
         session = self.session
         if session is None:
             return
@@ -178,7 +180,7 @@ class TelegramShellController:
             )
 
 
-    async def _stop_shell(self, incoming: IncomingMessage) -> None:
+    async def _stop_shell(self, incoming: Message) -> None:
         session = self.session
         stopped = await session.interrupt() if session is not None else False
         await self.telegram.send_message(

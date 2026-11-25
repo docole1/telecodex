@@ -6,11 +6,13 @@ import logging
 import secrets
 from typing import Any, Callable
 
+from aiogram import Bot
+from aiogram.types import CallbackQuery, Message
+
 from telecodex.codex.permissions import PERMISSION_MODES
 from telecodex.codex.types import CodexModel, FastTierUnavailableError, MemoryFeatureUnavailableError
 from telecodex.i18n import SUPPORTED_LANGUAGES, TextCatalog
 from telecodex.state import OUTPUT_MODE_CHOICES
-from telecodex.telegram.api import TelegramAPI
 from telecodex.telegram.formatting import truncate
 from telecodex.telegram.pagination import (
     INLINE_BUTTON_TEXT_LIMIT,
@@ -29,16 +31,13 @@ from telecodex.telegram.pickers import (
     PermissionsPicker,
     SkillPicker,
 )
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage
-
-
 class TelegramSettingsController:
     """Own the model, permission, language, mode, skill, and memory pickers."""
 
     def __init__(
         self,
         *,
-        telegram: TelegramAPI,
+        telegram: Bot,
         chat_id: int,
         is_group: bool,
         is_attached: Callable[[], bool],
@@ -116,9 +115,9 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             chat_id,
             self._model_picker_text(picker),
-            self._model_picker_keyboard(picker),
+            reply_markup=self._model_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.model_picker = picker
@@ -130,9 +129,9 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             chat_id,
             self.texts.system("label.language_picker_prompt"),
-            keyboard,
+            reply_markup=keyboard,
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.language_picker = picker
@@ -143,9 +142,9 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             chat_id,
             self._mode_picker_text(),
-            self._mode_picker_keyboard(picker),
+            reply_markup=self._mode_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.mode_picker = picker
@@ -169,9 +168,9 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             chat_id,
             self._skills_picker_text(picker),
-            self._skills_picker_keyboard(picker),
+            reply_markup=self._skills_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.skill_picker = picker
@@ -271,9 +270,9 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             chat_id,
             self._memory_picker_text(picker),
-            self._memory_picker_keyboard(picker),
+            reply_markup=self._memory_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.memory_picker = picker
@@ -365,15 +364,15 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             chat_id,
             self._permissions_picker_text(),
-            self._permissions_picker_keyboard(picker),
+            reply_markup=self._permissions_picker_keyboard(picker),
         )
-        message_id = message.get("message_id")
+        message_id = message.message_id
         if isinstance(message_id, int):
             picker.message_id = message_id
             self.permissions_picker = picker
 
 
-    async def _handle_fast_command(self, incoming: IncomingMessage, argument: str) -> None:
+    async def _handle_fast_command(self, incoming: Message, argument: str) -> None:
         requested = argument.strip().casefold()
         if requested:
             await self.telegram.send_message(incoming.chat_id, self._text("fast.label.usage"))
@@ -441,7 +440,7 @@ class TelegramSettingsController:
 
     async def _handle_permissions_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.permissions_picker
@@ -451,11 +450,11 @@ class TelegramSettingsController:
             or parts[1] != picker.token
             or incoming.message_id != picker.message_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("permissions.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("permissions.label.stale"))
             return
         mode = parts[2]
         if mode not in PERMISSION_MODES:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("permissions.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("permissions.label.stale"))
             return
         try:
             self._codex().select_permission_mode(mode)
@@ -466,9 +465,9 @@ class TelegramSettingsController:
                 event="telegram.permissions.select_failed",
                 permission_mode=mode,
             )
-            await self.telegram.answer_callback(incoming.callback_id, self._text("permissions.label.save_failed"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("permissions.label.save_failed"))
             return
-        await self.telegram.answer_callback(
+        await self.telegram.answer_callback_query(
             incoming.callback_id,
             self._text("permissions.label.selection_saved"),
         )
@@ -549,7 +548,7 @@ class TelegramSettingsController:
         return {"inline_keyboard": rows}
 
 
-    async def _show_group_mode_picker(self, incoming: IncomingMessage) -> None:
+    async def _show_group_mode_picker(self, incoming: Message) -> None:
         if not self.is_group:
             await self.telegram.send_message(
                 incoming.chat_id,
@@ -568,16 +567,16 @@ class TelegramSettingsController:
         message = await self.telegram.send_message(
             incoming.chat_id,
             self._group_mode_picker_text(),
-            self._group_mode_picker_keyboard(picker),
+            reply_markup=self._group_mode_picker_keyboard(picker),
             reply_to_message_id=incoming.message_id,
         )
-        picker.message_id = message.get("message_id")
+        picker.message_id = message.message_id
         self.group_mode_picker = picker
 
 
     async def _handle_group_mode_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.group_mode_picker
@@ -591,7 +590,7 @@ class TelegramSettingsController:
             or parts[2] not in {"triggered", "all"}
             or self._set_group_all_messages_to_codex is None
         ):
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self._text("groups.label.mode_stale"),
             )
@@ -607,18 +606,18 @@ class TelegramSettingsController:
                 event="telegram.group.mode_save_failed",
                 enabled=enabled,
             )
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self._text("groups.label.mode_save_failed"),
             )
             return
         if not saved:
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self._text("groups.label.mode_stale"),
             )
             return
-        await self.telegram.answer_callback(
+        await self.telegram.answer_callback_query(
             incoming.callback_id,
             self._text("groups.label.mode_saved", mode=self._group_mode_name(parts[2])),
         )
@@ -632,7 +631,7 @@ class TelegramSettingsController:
 
     async def _handle_mode_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.mode_picker
@@ -642,11 +641,11 @@ class TelegramSettingsController:
             or parts[1] != picker.token
             or incoming.message_id != picker.message_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mode.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mode.label.stale"))
             return
         mode = parts[2]
         if mode not in OUTPUT_MODE_CHOICES:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mode.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mode.label.stale"))
             return
 
         try:
@@ -658,9 +657,9 @@ class TelegramSettingsController:
                 event="telegram.output_mode.select_failed",
                 outcome=mode,
             )
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mode.label.save_failed"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("mode.label.save_failed"))
             return
-        await self.telegram.answer_callback(incoming.callback_id)
+        await self.telegram.answer_callback_query(incoming.callback_id)
         await self._edit_message(
             incoming.chat_id,
             incoming.message_id,
@@ -671,7 +670,7 @@ class TelegramSettingsController:
 
     async def _handle_skills_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.skill_picker
@@ -681,13 +680,13 @@ class TelegramSettingsController:
             or parts[1] != picker.token
             or incoming.message_id != picker.message_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.stale"))
             return
         action = parts[2]
         if action == "a" and len(parts) == 4 and parts[3] in {"use", "manage"}:
             picker.action = parts[3]
             picker.page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -698,7 +697,7 @@ class TelegramSettingsController:
         if action == "b" and len(parts) == 3:
             picker.action = "menu"
             picker.page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -707,7 +706,7 @@ class TelegramSettingsController:
             )
             return
         if action == "n" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             return
         if action == "p" and len(parts) == 4:
             try:
@@ -715,10 +714,10 @@ class TelegramSettingsController:
             except ValueError:
                 page = -1
             if page < 0 or page >= page_count(len(picker.skills)):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.stale"))
                 return
             picker.page = page
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -734,11 +733,11 @@ class TelegramSettingsController:
                     raise ValueError("Skill button is not on the current page")
                 skill = picker.skills[index]
             except (IndexError, ValueError):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.stale"))
                 return
             if action == "use":
                 if not skill.enabled:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.disabled"))
+                    await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.disabled"))
                     return
                 try:
                     self._codex().select_skill_for_next_turn(skill)
@@ -748,9 +747,9 @@ class TelegramSettingsController:
                         exc,
                         event="telegram.skills.select_failed",
                     )
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.select_failed"))
+                    await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.select_failed"))
                     return
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.selected_toast"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.selected_toast"))
                 self.skill_picker = None
                 await self._edit_message(
                     incoming.chat_id,
@@ -774,9 +773,9 @@ class TelegramSettingsController:
                     event="telegram.skills.toggle_failed",
                     skill_name=skill.name,
                 )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.update_failed"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.update_failed"))
                 return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.updated"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.updated"))
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -784,12 +783,12 @@ class TelegramSettingsController:
                 self._skills_picker_keyboard(picker),
             )
             return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
+        await self.telegram.answer_callback_query(incoming.callback_id, self._text("skills.label.stale"))
 
 
     async def _handle_memory_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.memory_picker
@@ -800,14 +799,14 @@ class TelegramSettingsController:
             or incoming.message_id != picker.message_id
             or picker.thread_id != self._codex().state.thread_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.stale"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.stale"))
             return
         codex = self._codex()
         action = parts[2]
         if action == "cancel" and (picker.confirming_generation or picker.confirming_reset):
             picker.confirming_generation = False
             picker.confirming_reset = False
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -817,7 +816,7 @@ class TelegramSettingsController:
             return
         if action == "reset":
             picker.confirming_reset = True
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -835,9 +834,9 @@ class TelegramSettingsController:
                     exc,
                     event="telegram.memories.reset_failed",
                 )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.reset_failed"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.reset_failed"))
                 return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.reset_done"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.reset_done"))
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -847,7 +846,7 @@ class TelegramSettingsController:
             return
         if action == "generate":
             picker.confirming_generation = True
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -866,9 +865,9 @@ class TelegramSettingsController:
                     exc,
                     event="telegram.memories.generation_write_failed",
                 )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.save_failed"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.save_failed"))
                 return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.saved"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.saved"))
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -887,9 +886,9 @@ class TelegramSettingsController:
                     exc,
                     event="telegram.memories.feature_enable_failed",
                 )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.save_failed"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.save_failed"))
                 return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.feature_enabled"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.feature_enabled"))
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -909,7 +908,7 @@ class TelegramSettingsController:
                 picker.use_memories = target_mode == "enabled"
             except MemoryFeatureUnavailableError:
                 picker.settings = await codex.read_memory_settings()
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.feature_disabled"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.feature_disabled"))
                 await self._edit_message(
                     incoming.chat_id,
                     incoming.message_id,
@@ -923,9 +922,9 @@ class TelegramSettingsController:
                     exc,
                     event="telegram.memories.thread_mode_failed",
                 )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.save_failed"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.save_failed"))
                 return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.saved"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.saved"))
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -933,12 +932,12 @@ class TelegramSettingsController:
                 self._memory_picker_keyboard(picker),
             )
             return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.stale"))
+        await self.telegram.answer_callback_query(incoming.callback_id, self._text("memories.label.stale"))
 
 
     async def _handle_language_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.language_picker
@@ -948,21 +947,21 @@ class TelegramSettingsController:
             or parts[1] != picker.token
             or incoming.message_id != picker.message_id
         ):
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self.texts.system("label.language_picker_stale"),
             )
             return
         language = parts[2]
         if language not in SUPPORTED_LANGUAGES:
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self.texts.system("label.language_picker_invalid"),
             )
             return
 
         self._codex().select_language(language)
-        await self.telegram.answer_callback(
+        await self.telegram.answer_callback_query(
             incoming.callback_id,
             self.texts.system(
                 "label.language_picker_saved",
@@ -979,7 +978,7 @@ class TelegramSettingsController:
 
     async def _handle_model_callback(
         self,
-        incoming: IncomingCallback,
+        incoming: CallbackQuery,
         parts: list[str],
     ) -> None:
         picker = self.model_picker
@@ -989,7 +988,7 @@ class TelegramSettingsController:
             or parts[1] != picker.token
             or incoming.message_id != picker.message_id
         ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("models.label.expired"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("models.label.expired"))
             return
 
         action = parts[2]
@@ -997,7 +996,7 @@ class TelegramSettingsController:
             model = picker.models[picker.effort_model_index]
             if action == "b" and len(parts) == 3:
                 picker.effort_model_index = None
-                await self.telegram.answer_callback(incoming.callback_id)
+                await self.telegram.answer_callback_query(incoming.callback_id)
                 await self._edit_message(
                     incoming.chat_id,
                     incoming.message_id,
@@ -1015,10 +1014,10 @@ class TelegramSettingsController:
                         raise ValueError("Effort button is not valid")
                     effort = efforts[effort_index]
                 except ValueError:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("common.label.stale_button"))
+                    await self.telegram.answer_callback_query(incoming.callback_id, self._text("common.label.stale_button"))
                     return
             else:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("common.label.stale_button"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("common.label.stale_button"))
                 return
 
             try:
@@ -1031,7 +1030,7 @@ class TelegramSettingsController:
                     model=model.model,
                     effort=effort,
                 )
-                await self.telegram.answer_callback(
+                await self.telegram.answer_callback_query(
                     incoming.callback_id,
                     self._text("models.label.selection_failed"),
                 )
@@ -1039,7 +1038,7 @@ class TelegramSettingsController:
             picker.current_model = model.model
             picker.current_effort = effort
             picker.effort_model_index = None
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self._text("models.label.selection_saved"),
             )
@@ -1052,7 +1051,7 @@ class TelegramSettingsController:
             return
 
         if action == "i" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             return
 
         if action == "p" and len(parts) == 4:
@@ -1062,10 +1061,10 @@ class TelegramSettingsController:
                 page = -1
             page_count = self._model_page_count(picker)
             if page < 0 or page >= page_count:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("models.label.invalid_page"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("models.label.invalid_page"))
                 return
             picker.page = page
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -1086,12 +1085,12 @@ class TelegramSettingsController:
                     exc,
                     event="telegram.model.reset_failed",
                 )
-                await self.telegram.answer_callback(
+                await self.telegram.answer_callback_query(
                     incoming.callback_id,
                     self._text("models.label.selection_failed"),
                 )
                 return
-            await self.telegram.answer_callback(
+            await self.telegram.answer_callback_query(
                 incoming.callback_id,
                 self._text("models.label.selection_saved"),
             )
@@ -1108,10 +1107,10 @@ class TelegramSettingsController:
             except ValueError:
                 model_index = -1
             if model_index < 0 or model_index >= len(picker.models):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("models.label.unknown"))
+                await self.telegram.answer_callback_query(incoming.callback_id, self._text("models.label.unknown"))
                 return
             picker.effort_model_index = model_index
-            await self.telegram.answer_callback(incoming.callback_id)
+            await self.telegram.answer_callback_query(incoming.callback_id)
             await self._edit_message(
                 incoming.chat_id,
                 incoming.message_id,
@@ -1120,7 +1119,7 @@ class TelegramSettingsController:
             )
             return
         else:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("common.label.stale_button"))
+            await self.telegram.answer_callback_query(incoming.callback_id, self._text("common.label.stale_button"))
             return
 
 

@@ -6,6 +6,9 @@ import asyncio
 import logging
 from typing import Any, Callable
 
+from aiogram import Bot
+from aiogram.types import CallbackQuery, Message
+
 from telecodex.audio.transcriber import LocalAudioTranscriber
 from telecodex.codex.session import ActiveThreadWriterError, CodexSession
 from telecodex.config import AppConfig
@@ -14,8 +17,7 @@ from telecodex.i18n import TextCatalog, load_text_catalog
 from telecodex.logging_config import bind_log_context, log_exception, log_identifier
 from telecodex.shell.runner import ShellRunner
 from telecodex.state import RuntimeStateStore
-from telecodex.telegram.api import TelegramAPI
-from telecodex.telegram.updates import IncomingCallback, IncomingMessage, parse_command, parse_update
+from telecodex.telegram.updates import parse_command, parse_update
 from telecodex.telegram.user_controller import TelegramUserController
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,7 @@ class TelegramController:
     def __init__(
         self,
         config: AppConfig,
-        telegram: TelegramAPI,
+        telegram: Bot,
         shell: ShellRunner,
         session_factory: Callable[[int, TelegramUserController], CodexSession],
         texts: TextCatalog | None = None,
@@ -132,21 +134,43 @@ class TelegramController:
             return
         await self._handle_incoming(incoming)
 
-    async def _handle_incoming(self, incoming: IncomingMessage | IncomingCallback) -> None:
-        if isinstance(incoming, IncomingMessage) and await self._handle_group_command(incoming):
+    async def _handle_incoming(
+        self,
+        incoming: Message | CallbackQuery,
+        *,
+        message_route: str | None = None,
+        callback_route: str | None = None,
+    ) -> None:
+        prepared = await self._prepare_incoming(incoming)
+        if prepared is None:
             return
-        if isinstance(incoming, IncomingMessage) and await self._handle_group_setup_response(incoming):
-            return
+        controller, routed = prepared
+        if isinstance(routed, CallbackQuery):
+            await controller._handle_callback(routed, callback_route=callback_route)
+        else:
+            await controller._handle_message(routed, message_route=message_route)
+
+    async def _prepare_incoming(
+        self,
+        incoming: Message | CallbackQuery,
+    ) -> tuple[TelegramUserController, Message | CallbackQuery] | None:
+        if isinstance(incoming, Message) and await self._handle_group_command(incoming):
+            return None
+        if isinstance(incoming, Message) and await self._handle_group_setup_response(incoming):
+            return None
         if not self.can_user_access_context(incoming.chat_id, incoming.user_id):
-            if isinstance(incoming, IncomingCallback):
-                await self.telegram.answer_callback(incoming.callback_id)
-            return
+            if isinstance(incoming, CallbackQuery):
+                await self.telegram.answer_callback_query(incoming.callback_id)
+            return None
         controller = self._controller_for_update(incoming)
         if controller is None:
-            return
-        await controller._handle_incoming(incoming)
+            return None
+        prepared = await controller._prepare_incoming(incoming)
+        if prepared is None:
+            return None
+        return controller, prepared
 
-    async def _handle_group_setup_response(self, incoming: IncomingMessage) -> bool:
+    async def _handle_group_setup_response(self, incoming: Message) -> bool:
         if (
             incoming.chat_type not in {"group", "supergroup"}
             or incoming.user_id not in self.config.telegram_allowed_user_ids
@@ -183,7 +207,7 @@ class TelegramController:
             controller.attached = True
         return True
 
-    async def _handle_group_command(self, incoming: IncomingMessage) -> bool:
+    async def _handle_group_command(self, incoming: Message) -> bool:
         parsed = None if incoming.attachments else parse_command(incoming.text)
         supported = {"group_add", "group_remove", "group_mode"}
         if parsed is None or parsed[0] not in supported:
@@ -299,9 +323,9 @@ class TelegramController:
             )
 
     def _controller_for_update(
-        self, incoming: IncomingMessage | IncomingCallback
+        self, incoming: Message | CallbackQuery
     ) -> TelegramUserController | None:
-        if isinstance(incoming, IncomingMessage):
+        if isinstance(incoming, Message):
             if incoming.chat_type == "private" and incoming.chat_id == incoming.user_id:
                 return self._get_user_controller(incoming.user_id)
             if (
@@ -321,7 +345,7 @@ class TelegramController:
         if not updates:
             return
         incoming = parse_update(updates[0])
-        if not isinstance(incoming, IncomingMessage):
+        if not isinstance(incoming, Message):
             return
         if not self.can_user_access_context(incoming.chat_id, incoming.user_id):
             return
