@@ -9,7 +9,7 @@ import secrets
 import tempfile
 import uuid
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
@@ -20,6 +20,7 @@ from telecodex.codex.permissions import PERMISSION_MODES
 from telecodex.codex.command_prompts import RECAP_PROMPT, init_prompt
 from telecodex.codex.rpc import RpcError
 from telecodex.telegram.mcp import McpTelegramMixin, PendingMcpElicitation
+from telecodex.telegram.mcp_elicitation import McpElicitationController
 from telecodex.codex.session import (
     ActiveThreadWriterError,
     CollaborationModeUnavailableError,
@@ -48,9 +49,8 @@ from telecodex.logging_config import (
     isolated_log_context,
     log_exception,
     log_identifier,
-    redact_text,
 )
-from telecodex.shell.runner import EmptyShellCommandError, ShellRunner
+from telecodex.shell.runner import ShellRunner
 from telecodex.shell.session import ShellOutput, ShellSession
 from telecodex.state import OUTPUT_MODE_CHOICES
 from telecodex.telegram.activity import (
@@ -62,6 +62,7 @@ from telecodex.telegram.activity import (
     web_search_detail,
 )
 from telecodex.telegram.api import TelegramAPI, TelegramApiError
+from telecodex.telegram.codex_prompts import TelegramCodexPromptController
 from telecodex.telegram.formatting import (
     TELEGRAM_TEXT_LIMIT,
     format_command,
@@ -94,13 +95,22 @@ from telecodex.telegram.pickers import (
 )
 from telecodex.telegram.reply_format import format_long_text
 from telecodex.telegram.updates import IncomingCallback, IncomingMessage, parse_command, parse_update
-from telecodex.workspace_files import (
-    WorkspaceEntry,
-    WorkspaceFileBrowser,
-    WorkspaceFileTooLarge,
-    WorkspaceFilesError,
-    WorkspacePreviewUnavailable,
+from telecodex.telegram.user_shell import TelegramShellController
+from telecodex.telegram.user_processes import TelegramProcessesController
+from telecodex.telegram.user_files import TelegramWorkspaceFilesController
+from telecodex.telegram.user_settings import TelegramSettingsController
+from telecodex.telegram.user_state import (
+    GroupActivityItem,
+    PendingApproval,
+    PendingChatRecovery,
+    PendingGoalEdit,
+    PendingStaleTurnAction,
+    PendingThreadSwitch,
+    PendingUserInput,
+    QueuedCompactionInput,
+    RunningCommand,
 )
+from telecodex.workspace_files import WorkspaceEntry
 
 if TYPE_CHECKING:
     from telecodex.codex.session import CodexModel, CodexSession, CodexThread
@@ -110,13 +120,6 @@ TYPING_ACTION_INTERVAL_SECONDS = 2.9
 GROUP_ACTIVITY_INTERVAL_SECONDS = 3.1
 GROUP_ACTIVITY_MESSAGE_LIMIT = 3900
 GROUP_ACTIVITY_QUEUE_LIMIT = 300
-_SENSITIVE_COMMAND_ARGUMENT = re.compile(
-    r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|credential|auth)(?:=|\s+))"
-    r"(\"[^\"]*\"|'[^']*'|[^\s]+)"
-)
-_TERMINAL_ESCAPE_SEQUENCE = re.compile(
-    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
-)
 TELEGRAM_COMMAND_NAMES = (
     "start", "help", "doctor", "status", "permissions", "rename", "delete",
     "fork", "compact", "plan", "goal", "recap", "init", "ps", "new", "files",
@@ -138,88 +141,6 @@ BUSY_ALLOWED_CALLBACKS = frozenset({
 })
 
 
-def _clean_terminal_output(text: str) -> str:
-    text = _TERMINAL_ESCAPE_SEQUENCE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
-    return "".join(
-        character
-        for character in text
-        if character in "\n\t" or (ord(character) >= 32 and not 0x7F <= ord(character) <= 0x9F)
-    )
-
-
-@dataclass
-class PendingApproval:
-    future: asyncio.Future[str]
-    message_id: int
-    chat_id: int
-
-
-@dataclass
-class PendingUserInput:
-    future: asyncio.Future[dict[str, Any]]
-    questions: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class RunningCommand:
-    message_id: int | None
-    started_at: float
-    command: str
-
-
-@dataclass(frozen=True)
-class PendingGoalEdit:
-    thread_id: str
-
-
-@dataclass(frozen=True)
-class PendingThreadSwitch:
-    token: str
-    message_id: int
-    action: str
-    path: Path | None = None
-    thread_id: str | None = None
-    label: str | None = None
-    picker_message_id: int | None = None
-    picker_token: str | None = None
-    picker_index: int | None = None
-    source_thread_id: str | None = None
-
-
-@dataclass(frozen=True)
-class PendingStaleTurnAction:
-    message_id: int
-    thread_id: str
-    turn_id: str | None
-
-
-@dataclass
-class PendingChatRecovery:
-    token: str
-    message_id: int
-    thread_id: str
-    stage: str
-    terminal_ids: tuple[str, ...] = ()
-    confirm_interrupt: bool = False
-
-
-@dataclass
-class GroupActivityItem:
-    text: str
-    entities: list[dict[str, Any]]
-    reply_to_message_id: int | None
-    batchable: bool = True
-    delivery: asyncio.Future[dict[str, Any]] | None = None
-    disable_notification: bool = False
-    rich_markdown: bool = False
-
-
-@dataclass(slots=True)
-class QueuedCompactionInput:
-    chat_id: int
-    text: str
-    prompt_message_id: int
-    additional_input_items: list[dict[str, Any]] | None = None
 
 
 class TelegramUserController(McpTelegramMixin):
@@ -244,7 +165,6 @@ class TelegramUserController(McpTelegramMixin):
         self.config = config
         self.telegram = telegram
         self.shell = shell
-        self.shell_session: ShellSession | None = None
         self.user_id = user_id
         self.chat_id = user_id
         self.is_group = is_group
@@ -257,8 +177,6 @@ class TelegramUserController(McpTelegramMixin):
         self.texts = texts or load_text_catalog()
         self.audio_transcriber = audio_transcriber
         self.codex: CodexSession | None = None
-        self.pending_approvals: dict[str, PendingApproval] = {}
-        self.pending_user_input: PendingUserInput | None = None
         self._codex_activity_lock = asyncio.Lock()
         self._typing_task: asyncio.Task[None] | None = None
         self._typing_enabled = False
@@ -275,22 +193,19 @@ class TelegramUserController(McpTelegramMixin):
         self.pending_goal_edit: PendingGoalEdit | None = None
         self._turn_prompt_message_id: int | None = None
         self._shutdown_in_progress = False
-        self.model_picker: ModelPicker | None = None
-        self.language_picker: LanguagePicker | None = None
-        self.mode_picker: ModePicker | None = None
-        self.group_mode_picker: GroupModePicker | None = None
-        self.skill_picker: SkillPicker | None = None
-        self.memory_picker: MemoryPicker | None = None
         self.directory_picker: DirectoryPicker | None = None
-        self.files_picker: FilesPicker | None = None
         self.chats_picker: ChatsPicker | None = None
-        self.permissions_picker: PermissionsPicker | None = None
         self.delete_confirmation: DeleteConfirmation | None = None
-        self.processes_picker: ProcessesPicker | None = None
         self.mcp_picker: McpPicker | None = None
         self.mcp_add_wizard: McpAddWizard | None = None
-        self.pending_mcp_elicitations: dict[str, PendingMcpElicitation] = {}
-        self._mcp_form_token: str | None = None
+        self.mcp_elicitation = McpElicitationController(
+            telegram=self.telegram,
+            chat_id=self.chat_id,
+            text=self._text,
+            truncate=self._truncate,
+            edit_message=self._edit_message,
+            send_activity=self._send_codex_activity,
+        )
         self._reload_mcp_config: Callable[[], Awaitable[tuple[int, int]]] | None = None
         self._group_activity_items: list[GroupActivityItem] = []
         self._group_activity_event = asyncio.Event()
@@ -299,9 +214,443 @@ class TelegramUserController(McpTelegramMixin):
         self._group_activity_dropped = 0
         self._compaction_input_queue: deque[QueuedCompactionInput] = deque()
         self._compaction_input_queue_task: asyncio.Task[None] | None = None
+        self.shell_ui = TelegramShellController(
+            config=self.config,
+            telegram=self.telegram,
+            shell=self.shell,
+            chat_id=self.chat_id,
+            is_group=self.is_group,
+            is_attached=lambda: self.attached,
+            codex=self._codex,
+            text=self._text,
+            log_context_fields=self._log_context_fields,
+            log_failure=self._log_failure,
+            consume_group_trigger=self._consume_group_trigger,
+            truncate=self._truncate,
+            queue_group_activity=self._queue_group_activity,
+            activity_lock=self._codex_activity_lock,
+            group_message_limit=GROUP_ACTIVITY_MESSAGE_LIMIT,
+        )
+        self.codex_prompts = TelegramCodexPromptController(
+            telegram=self.telegram,
+            chat_id=self.chat_id,
+            is_group=self.is_group,
+            is_attached=lambda: self.attached,
+            codex=self._codex,
+            text=self._text,
+            truncate=self._truncate,
+            edit_message=self._edit_message,
+            pause_typing=self._pause_typing,
+            resume_typing=self._resume_typing,
+            is_shutting_down=lambda: self._shutdown_in_progress,
+            shows_detailed_activity=self._shows_detailed_activity,
+            ask_mcp_elicitation=self._ask_mcp_elicitation,
+        )
+        self.processes_ui = TelegramProcessesController(
+            telegram=self.telegram,
+            codex=self._codex,
+            text=self._text,
+            texts=self.texts,
+            edit_message=self._edit_message,
+            log_failure=self._log_failure,
+        )
+        self.files_ui = TelegramWorkspaceFilesController(
+            telegram=self.telegram,
+            codex=self._codex,
+            workspace_root=self._workspace_root,
+            text=self._text,
+            texts=self.texts,
+            edit_message=self._edit_message,
+            log_failure=self._log_failure,
+        )
+        self.settings_ui = TelegramSettingsController(
+            telegram=self.telegram,
+            chat_id=self.chat_id,
+            is_group=self.is_group,
+            is_attached=lambda: self.attached,
+            codex=self._codex,
+            text=self._text,
+            texts=self.texts,
+            selected_button_label=self._selected_button_label,
+            edit_message=self._edit_message,
+            log_failure=self._log_failure,
+            language=self._language,
+            selected_output_mode=self._selected_output_mode,
+            group_all_messages_to_codex=self._group_all_messages_to_codex,
+            set_group_all_messages_to_codex=self._set_group_all_messages_to_codex,
+        )
 
     def bind_codex(self, codex: CodexSession) -> None:
         self.codex = codex
+
+    @property
+    def shell_session(self) -> ShellSession | None:
+        return self.shell_ui.session
+
+    @shell_session.setter
+    def shell_session(self, value: ShellSession | None) -> None:
+        self.shell_ui.session = value
+
+    @property
+    def pending_approvals(self) -> dict[str, PendingApproval]:
+        return self.codex_prompts.pending_approvals
+
+    @property
+    def pending_user_input(self) -> PendingUserInput | None:
+        return self.codex_prompts.pending_user_input
+
+    @pending_user_input.setter
+    def pending_user_input(self, value: PendingUserInput | None) -> None:
+        self.codex_prompts.pending_user_input = value
+
+    @property
+    def processes_picker(self) -> ProcessesPicker | None:
+        return self.processes_ui.picker
+
+    @processes_picker.setter
+    def processes_picker(self, value: ProcessesPicker | None) -> None:
+        self.processes_ui.picker = value
+
+    @property
+    def files_picker(self) -> FilesPicker | None:
+        return self.files_ui.picker
+
+    @files_picker.setter
+    def files_picker(self, value: FilesPicker | None) -> None:
+        self.files_ui.picker = value
+
+    @property
+    def model_picker(self) -> ModelPicker | None:
+        return self.settings_ui.model_picker
+
+    @model_picker.setter
+    def model_picker(self, value: ModelPicker | None) -> None:
+        self.settings_ui.model_picker = value
+
+    @property
+    def language_picker(self) -> LanguagePicker | None:
+        return self.settings_ui.language_picker
+
+    @language_picker.setter
+    def language_picker(self, value: LanguagePicker | None) -> None:
+        self.settings_ui.language_picker = value
+
+    @property
+    def mode_picker(self) -> ModePicker | None:
+        return self.settings_ui.mode_picker
+
+    @mode_picker.setter
+    def mode_picker(self, value: ModePicker | None) -> None:
+        self.settings_ui.mode_picker = value
+
+    @property
+    def group_mode_picker(self) -> GroupModePicker | None:
+        return self.settings_ui.group_mode_picker
+
+    @group_mode_picker.setter
+    def group_mode_picker(self, value: GroupModePicker | None) -> None:
+        self.settings_ui.group_mode_picker = value
+
+    @property
+    def skill_picker(self) -> SkillPicker | None:
+        return self.settings_ui.skill_picker
+
+    @skill_picker.setter
+    def skill_picker(self, value: SkillPicker | None) -> None:
+        self.settings_ui.skill_picker = value
+
+    @property
+    def memory_picker(self) -> MemoryPicker | None:
+        return self.settings_ui.memory_picker
+
+    @memory_picker.setter
+    def memory_picker(self, value: MemoryPicker | None) -> None:
+        self.settings_ui.memory_picker = value
+
+    @property
+    def permissions_picker(self) -> PermissionsPicker | None:
+        return self.settings_ui.permissions_picker
+
+    @permissions_picker.setter
+    def permissions_picker(self, value: PermissionsPicker | None) -> None:
+        self.settings_ui.permissions_picker = value
+
+    async def _show_model_picker(self, chat_id: int) -> None:
+        await self.settings_ui._show_model_picker(chat_id)
+
+    async def _show_language_picker(self, chat_id: int) -> None:
+        await self.settings_ui._show_language_picker(chat_id)
+
+    async def _show_mode_picker(self, chat_id: int) -> None:
+        await self.settings_ui._show_mode_picker(chat_id)
+
+    async def _show_skills_picker(self, chat_id: int) -> None:
+        await self.settings_ui._show_skills_picker(chat_id)
+
+    def _skills_picker_text(self, picker: SkillPicker) -> str:
+        return self.settings_ui._skills_picker_text(picker)
+
+    def _skills_picker_keyboard(self, picker: SkillPicker) -> dict[str, Any]:
+        return self.settings_ui._skills_picker_keyboard(picker)
+
+    async def _show_memory_picker(self, chat_id: int) -> None:
+        await self.settings_ui._show_memory_picker(chat_id)
+
+    def _memory_picker_text(self, picker: MemoryPicker) -> str:
+        return self.settings_ui._memory_picker_text(picker)
+
+    def _memory_picker_keyboard(self, picker: MemoryPicker) -> dict[str, Any]:
+        return self.settings_ui._memory_picker_keyboard(picker)
+
+    async def _show_permissions_picker(self, chat_id: int) -> None:
+        await self.settings_ui._show_permissions_picker(chat_id)
+
+    async def _handle_fast_command(self, incoming: IncomingMessage, argument: str) -> None:
+        await self.settings_ui._handle_fast_command(incoming, argument)
+
+    def _permissions_picker_text(self) -> str:
+        return self.settings_ui._permissions_picker_text()
+
+    def _permissions_picker_keyboard(self, picker: PermissionsPicker) -> dict[str, Any]:
+        return self.settings_ui._permissions_picker_keyboard(picker)
+
+    async def _handle_permissions_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_permissions_callback(incoming, parts)
+
+    def _language_picker_keyboard(self, picker: LanguagePicker) -> dict[str, Any]:
+        return self.settings_ui._language_picker_keyboard(picker)
+
+    def _mode_picker_text(self) -> str:
+        return self.settings_ui._mode_picker_text()
+
+    def _mode_picker_keyboard(self, picker: ModePicker) -> dict[str, Any]:
+        return self.settings_ui._mode_picker_keyboard(picker)
+
+    def _group_mode_name(self, mode: str) -> str:
+        return self.settings_ui._group_mode_name(mode)
+
+    def _group_mode_picker_text(self) -> str:
+        return self.settings_ui._group_mode_picker_text()
+
+    def _group_mode_picker_keyboard(self, picker: GroupModePicker) -> dict[str, Any]:
+        return self.settings_ui._group_mode_picker_keyboard(picker)
+
+    async def _show_group_mode_picker(self, incoming: IncomingMessage) -> None:
+        await self.settings_ui._show_group_mode_picker(incoming)
+
+    async def _handle_group_mode_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_group_mode_callback(incoming, parts)
+
+    async def _handle_mode_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_mode_callback(incoming, parts)
+
+    async def _handle_skills_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_skills_callback(incoming, parts)
+
+    async def _handle_memory_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_memory_callback(incoming, parts)
+
+    async def _handle_language_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_language_callback(incoming, parts)
+
+    async def _handle_model_callback(self, incoming: IncomingCallback, parts: list[str]) -> None:
+        await self.settings_ui._handle_model_callback(incoming, parts)
+
+    @staticmethod
+    def _model_page_count(picker: ModelPicker) -> int:
+        return TelegramSettingsController._model_page_count(picker)
+
+    def _model_picker_text(self, picker: ModelPicker) -> str:
+        return self.settings_ui._model_picker_text(picker)
+
+    def _model_picker_keyboard(self, picker: ModelPicker) -> dict[str, Any]:
+        return self.settings_ui._model_picker_keyboard(picker)
+
+    @staticmethod
+    def _model_effort_options(model: CodexModel) -> tuple[str, ...]:
+        return TelegramSettingsController._model_effort_options(model)
+
+    def _effort_label(self, effort: str) -> str:
+        return self.settings_ui._effort_label(effort)
+
+    async def _on_codex_prompt(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        return await self.codex_prompts._on_codex_prompt(method, params)
+
+    async def _ask_permission(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self.codex_prompts._ask_permission(params)
+
+    async def _ask_approval(self, method: str, params: dict[str, Any]) -> str:
+        return await self.codex_prompts._ask_approval(method, params)
+
+    async def _ask_user_input(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self.codex_prompts._ask_user_input(params)
+
+    async def _resolve_user_input(self, text: str) -> None:
+        await self.codex_prompts._resolve_user_input(text)
+
+    async def _show_processes(self, chat_id: int) -> None:
+        await self.processes_ui._show_processes(chat_id)
+
+    def _terminal_command_text(self, terminal: CodexBackgroundTerminal) -> str:
+        return self.processes_ui._terminal_command_text(terminal)
+
+    def _terminal_cwd_text(self, terminal: CodexBackgroundTerminal, limit: int) -> str:
+        return self.processes_ui._terminal_cwd_text(terminal, limit)
+
+    def _terminal_resources_text(self, terminal: CodexBackgroundTerminal) -> str:
+        return self.processes_ui._terminal_resources_text(terminal)
+
+    def _processes_picker_text(self, picker: ProcessesPicker) -> str:
+        return self.processes_ui._processes_picker_text(picker)
+
+    def _processes_picker_keyboard(self, picker: ProcessesPicker) -> dict[str, Any]:
+        return self.processes_ui._processes_picker_keyboard(picker)
+
+    def _process_detail_text(self, terminal: CodexBackgroundTerminal) -> str:
+        return self.processes_ui._process_detail_text(terminal)
+
+    def _process_detail_keyboard(self, picker: ProcessesPicker) -> dict[str, Any]:
+        return self.processes_ui._process_detail_keyboard(picker)
+
+    async def _refresh_process_picker(
+        self,
+        incoming: IncomingCallback,
+        picker: ProcessesPicker,
+    ) -> None:
+        await self.processes_ui._refresh_process_picker(incoming, picker)
+
+    async def _handle_processes_callback(
+        self,
+        incoming: IncomingCallback,
+        parts: list[str],
+    ) -> None:
+        await self.processes_ui._handle_processes_callback(incoming, parts)
+
+    async def _show_files_picker(self, chat_id: int, user_id: int) -> None:
+        await self.files_ui._show_files_picker(chat_id, user_id)
+
+    async def _load_files_picker(
+        self,
+        chat_id: int,
+        picker: FilesPicker,
+        *,
+        send_new: bool = False,
+    ) -> bool:
+        return await self.files_ui._load_files_picker(chat_id, picker, send_new=send_new)
+
+    def _files_picker_text(self, picker: FilesPicker) -> str:
+        return self.files_ui._files_picker_text(picker)
+
+    def _files_picker_keyboard(self, picker: FilesPicker) -> dict[str, Any]:
+        return self.files_ui._files_picker_keyboard(picker)
+
+    def _files_detail_text(self, entry: WorkspaceEntry) -> str:
+        return self.files_ui._files_detail_text(entry)
+
+    def _files_detail_keyboard(self, picker: FilesPicker) -> dict[str, Any]:
+        return self.files_ui._files_detail_keyboard(picker)
+
+    @staticmethod
+    def _format_workspace_file_size(size: int) -> str:
+        return TelegramWorkspaceFilesController._format_workspace_file_size(size)
+
+    async def _handle_files_callback(
+        self,
+        incoming: IncomingCallback,
+        parts: list[str],
+    ) -> None:
+        await self.files_ui._handle_files_callback(incoming, parts)
+
+    @staticmethod
+    def _selected_workspace_file(picker: FilesPicker) -> WorkspaceEntry | None:
+        return TelegramWorkspaceFilesController._selected_workspace_file(picker)
+
+    async def _send_workspace_preview(
+        self,
+        chat_id: int,
+        picker: FilesPicker,
+        entry: WorkspaceEntry,
+    ) -> None:
+        await self.files_ui._send_workspace_preview(chat_id, picker, entry)
+
+    @staticmethod
+    def _truncate_utf16(text: str, limit: int) -> str:
+        return TelegramWorkspaceFilesController._truncate_utf16(text, limit)
+
+    async def _send_workspace_file(
+        self,
+        chat_id: int,
+        picker: FilesPicker,
+        entry: WorkspaceEntry,
+    ) -> None:
+        await self.files_ui._send_workspace_file(chat_id, picker, entry)
+
+    async def close_shell_session(self) -> None:
+        await self.shell_ui.close_shell_session()
+
+    async def _enter_shell(self, incoming: IncomingMessage) -> None:
+        await self.shell_ui._enter_shell(incoming)
+
+    async def _exit_shell(self, incoming: IncomingMessage) -> None:
+        await self.shell_ui._exit_shell(incoming)
+
+    async def _send_shell_input(self, incoming: IncomingMessage) -> None:
+        await self.shell_ui._send_shell_input(incoming)
+
+    async def _stop_shell(self, incoming: IncomingMessage) -> None:
+        await self.shell_ui._stop_shell(incoming)
+
+    async def _on_shell_output(self, output: ShellOutput) -> None:
+        await self.shell_ui._on_shell_output(output)
+
+    async def _send_shell_result(
+        self,
+        state: str,
+        output: str,
+        reply_to_message_id: int | None,
+    ) -> None:
+        await self.shell_ui._send_shell_result(state, output, reply_to_message_id)
+
+    async def _send_shell_output_chunks(
+        self,
+        output: str,
+        reply_to_message_id: int | None,
+    ) -> None:
+        await self.shell_ui._send_shell_output_chunks(output, reply_to_message_id)
+
+    async def _send_shell_status(
+        self,
+        text: str,
+        reply_to_message_id: int | None,
+    ) -> None:
+        await self.shell_ui._send_shell_status(text, reply_to_message_id)
+
+    async def _send_shell_message(
+        self,
+        text: str,
+        entities: list[dict[str, Any]],
+        reply_to_message_id: int | None,
+    ) -> None:
+        await self.shell_ui._send_shell_message(text, entities, reply_to_message_id)
+
+    async def _on_shell_closed(self, session: ShellSession, reason: str) -> None:
+        await self.shell_ui._on_shell_closed(session, reason)
+
+    async def _run_shell(self, chat_id: int, command: str) -> None:
+        await self.shell_ui._run_shell(chat_id, command)
+
+    @property
+    def pending_mcp_elicitations(self) -> dict[str, PendingMcpElicitation]:
+        """Compatibility view for supervision and existing controller callers."""
+        return self.mcp_elicitation.pending
+
+    @property
+    def _mcp_form_token(self) -> str | None:
+        return self.mcp_elicitation._form_token
+
+    @_mcp_form_token.setter
+    def _mcp_form_token(self, value: str | None) -> None:
+        self.mcp_elicitation._form_token = value
 
     def bind_mcp_reloader(
         self,
@@ -1500,117 +1849,10 @@ class TelegramUserController(McpTelegramMixin):
             fork_task.cancel()
             await asyncio.gather(fork_task, return_exceptions=True)
 
-    async def close_shell_session(self) -> None:
-        session = self.shell_session
-        self.shell_session = None
-        if session is not None:
-            await session.close()
 
-    async def _enter_shell(self, incoming: IncomingMessage) -> None:
-        if self.shell_session is not None and self.shell_session.is_open:
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("shell.label.already_open", cwd=self._codex().working_directory),
-                reply_to_message_id=incoming.message_id,
-            )
-            return
 
-        session = ShellSession(
-            self.shell,
-            self._codex().working_directory,
-            self.config.shell_timeout_seconds,
-            self._on_shell_output,
-            self._on_shell_closed,
-            self._log_context_fields(),
-        )
-        self.shell_session = session
-        try:
-            await session.start()
-        except Exception as exc:
-            if self.shell_session is session:
-                self.shell_session = None
-            self._log_failure(
-                "Could not start interactive host shell",
-                exc,
-                event="shell.session.start_failed",
-            )
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("shell.label.start_failed"),
-                reply_to_message_id=incoming.message_id,
-            )
-            return
 
-        await self.telegram.send_message(
-            incoming.chat_id,
-            self._text("shell.label.started", cwd=self._codex().working_directory),
-            reply_to_message_id=incoming.message_id,
-        )
 
-    async def _exit_shell(self, incoming: IncomingMessage) -> None:
-        session = self.shell_session
-        if session is None:
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("shell.label.not_open"),
-                reply_to_message_id=incoming.message_id,
-            )
-            return
-        self.shell_session = None
-        await session.close()
-        await self.telegram.send_message(
-            incoming.chat_id,
-            self._text("shell.label.closed"),
-            reply_to_message_id=incoming.message_id,
-        )
-
-    async def _send_shell_input(self, incoming: IncomingMessage) -> None:
-        session = self.shell_session
-        if session is None:
-            return
-        text = incoming.text
-        if self.is_group:
-            triggered_text = self._consume_group_trigger(text)
-            if triggered_text is not None:
-                text = triggered_text
-                if not text:
-                    await self.telegram.send_message(
-                        incoming.chat_id,
-                        self._text("groups.label.trigger_empty"),
-                        reply_to_message_id=incoming.message_id,
-                    )
-                    return
-        try:
-            await session.send_input(text, incoming.message_id)
-        except ValueError:
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("shell.label.input_too_long"),
-                reply_to_message_id=incoming.message_id,
-            )
-        except (OSError, RuntimeError) as exc:
-            if self.shell_session is session:
-                self.shell_session = None
-            self._log_failure(
-                "Could not write to interactive shell",
-                exc,
-                event="shell.session.input_failed",
-                level=logging.WARNING,
-            )
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("shell.label.not_open"),
-                reply_to_message_id=incoming.message_id,
-            )
-
-    async def _stop_shell(self, incoming: IncomingMessage) -> None:
-        session = self.shell_session
-        stopped = await session.interrupt() if session is not None else False
-        await self.telegram.send_message(
-            incoming.chat_id,
-            self._text("shell.label.stop_requested" if stopped else "shell.label.stop_idle"),
-            reply_to_message_id=incoming.message_id,
-        )
 
     async def _request_chat_recovery(self, incoming: IncomingMessage) -> None:
         codex = self._codex()
@@ -1919,155 +2161,12 @@ class TelegramUserController(McpTelegramMixin):
         if cancelled_compaction and not codex.is_busy:
             await self._finish_typing()
 
-    async def _on_shell_output(self, output: ShellOutput) -> None:
-        if self.is_group and not self.attached:
-            return
-        text = _clean_terminal_output(output.text)
-        if output.partial:
-            if text:
-                await self._send_shell_output_chunks(text, output.reply_to_message_id)
-            return
 
-        if output.return_code is None and not output.timed_out:
-            if text:
-                await self._send_shell_output_chunks(text, output.reply_to_message_id)
-            return
 
-        if output.timed_out:
-            state = self._text("shell.values.timeout")
-        elif output.return_code is not None:
-            state = self._text("shell.values.exit_code", code=output.return_code)
-        else:
-            state = self._text("shell.label.process_closed")
-        if output.truncated:
-            state += self._text("shell.values.output_truncated")
 
-        if text and output.previous_output_sent:
-            await self._send_shell_output_chunks(text, output.reply_to_message_id)
-            await self._send_shell_status(state, output.reply_to_message_id)
-            return
-        if text:
-            await self._send_shell_result(state, text, output.reply_to_message_id)
-            return
-        if output.previous_output_sent:
-            await self._send_shell_status(state, output.reply_to_message_id)
-            return
-        await self._send_shell_status(
-            f"{state}\n\n{self._text('shell.values.no_output')}",
-            output.reply_to_message_id,
-        )
 
-    async def _send_shell_result(
-        self,
-        state: str,
-        output: str,
-        reply_to_message_id: int | None,
-    ) -> None:
-        limit = GROUP_ACTIVITY_MESSAGE_LIMIT if self.is_group else TELEGRAM_TEXT_LIMIT
-        prefix = f"{state}\n\n"
-        first_limit = max(1, limit - utf16_length(prefix))
-        chunks = split_plain_text(output, limit=first_limit)
-        if not chunks:
-            await self._send_shell_status(
-                f"{state}\n\n{self._text('shell.values.no_output')}",
-                reply_to_message_id,
-            )
-            return
-        first = chunks.pop(0)
-        first_text = prefix + first
-        first_entities = [
-            {
-                "type": "pre",
-                "offset": utf16_length(prefix),
-                "length": utf16_length(first),
-            }
-        ]
-        await self._send_shell_message(first_text, first_entities, reply_to_message_id)
-        await self._send_shell_output_chunks("\n".join(chunks), reply_to_message_id)
 
-    async def _send_shell_output_chunks(
-        self,
-        output: str,
-        reply_to_message_id: int | None,
-    ) -> None:
-        limit = GROUP_ACTIVITY_MESSAGE_LIMIT if self.is_group else TELEGRAM_TEXT_LIMIT
-        for chunk in split_plain_text(output, limit=limit):
-            entities = [
-                {"type": "pre", "offset": 0, "length": utf16_length(chunk)}
-            ]
-            await self._send_shell_message(chunk, entities, reply_to_message_id)
 
-    async def _send_shell_status(
-        self,
-        text: str,
-        reply_to_message_id: int | None,
-    ) -> None:
-        for chunk in split_plain_text(text, limit=TELEGRAM_TEXT_LIMIT):
-            await self._send_shell_message(chunk, [], reply_to_message_id)
-
-    async def _send_shell_message(
-        self,
-        text: str,
-        entities: list[dict[str, Any]],
-        reply_to_message_id: int | None,
-    ) -> None:
-        async with self._codex_activity_lock:
-            if self.is_group:
-                await self._queue_group_activity(
-                    text,
-                    entities,
-                    reply_to_message_id,
-                    batchable=False,
-                    wait_for_delivery=True,
-                )
-            elif self.attached:
-                await self.telegram.send_message(
-                    self.chat_id,
-                    text,
-                    reply_to_message_id=reply_to_message_id,
-                    entities=entities,
-                )
-
-    async def _on_shell_closed(self, session: ShellSession, reason: str) -> None:
-        if self.shell_session is not session:
-            return
-        self.shell_session = None
-        await session.close()
-        if self.is_group and not self.attached:
-            return
-        key = {
-            "idle_timeout": "shell.label.idle_closed",
-            "process_exit": "shell.label.process_closed",
-            "reader_error": "shell.label.reader_closed",
-        }.get(reason, "shell.label.process_closed")
-        await self.telegram.send_message(self.chat_id, self._text(key))
-
-    async def _run_shell(self, chat_id: int, command: str) -> None:
-        if not command.strip():
-            await self.telegram.send_message(chat_id, self._text("shell.label.usage"))
-            return
-        try:
-            result = await self.shell.run(
-                command,
-                working_directory=self._codex().working_directory,
-            )
-        except EmptyShellCommandError:
-            await self.telegram.send_message(chat_id, self._text("shell.label.usage"))
-            return
-        except OSError:
-            await self.telegram.send_message(chat_id, self._text("errors.label.shell_exec"))
-            return
-        state = (
-            self._text("shell.values.timeout")
-            if result.timed_out
-            else self._text("shell.values.exit_code", code=result.return_code)
-        )
-        output = result.output or self._text("shell.values.no_output")
-        output_suffix = self._text("shell.values.output_truncated") if result.output_truncated else ""
-        prefix = self._text("shell.label.result", state=state, output="")
-        available_length = max(0, TELEGRAM_TEXT_LIMIT - len(prefix) - len(output_suffix))
-        output = self._truncate(output, available_length) + output_suffix
-        await self.telegram.send_message(chat_id, self._text("shell.label.result", state=state, output=output))
 
     async def _handle_callback(self, incoming: IncomingCallback) -> None:
         parts = incoming.data.split(":")
@@ -2184,595 +2283,26 @@ class TelegramUserController(McpTelegramMixin):
 
 
 
-    async def _show_model_picker(self, chat_id: int) -> None:
-        try:
-            codex = self._codex()
-            models = await codex.list_models()
-        except Exception as exc:
-            self._log_failure(
-                "Could not list Codex models",
-                exc,
-                event="telegram.models.list_failed",
-            )
-            await self.telegram.send_message(chat_id, self._text("models.label.list_failure"))
-            return
-        if not models:
-            await self.telegram.send_message(chat_id, self._text("models.label.empty"))
-            return
 
-        try:
-            current_model, current_effort = await codex.current_model_settings(models)
-        except Exception as exc:
-            self._log_failure(
-                "Could not read the current model settings for the Codex thread",
-                exc,
-                event="telegram.models.current_settings_failed",
-                level=logging.WARNING,
-            )
-            current_model = codex.selected_model or codex.default_model(models)
-            current_effort = codex.selected_effort
-        picker = ModelPicker(
-            token=secrets.token_urlsafe(6),
-            models=models,
-            page=0,
-            current_model=current_model,
-            current_effort=current_effort,
-        )
-        message = await self.telegram.send_message(
-            chat_id,
-            self._model_picker_text(picker),
-            self._model_picker_keyboard(picker),
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.model_picker = picker
 
-    async def _show_language_picker(self, chat_id: int) -> None:
-        picker = LanguagePicker(token=secrets.token_urlsafe(6))
-        keyboard = self._language_picker_keyboard(picker)
-        message = await self.telegram.send_message(
-            chat_id,
-            self.texts.system("label.language_picker_prompt"),
-            keyboard,
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.language_picker = picker
 
-    async def _show_mode_picker(self, chat_id: int) -> None:
-        picker = ModePicker(token=secrets.token_urlsafe(6))
-        message = await self.telegram.send_message(
-            chat_id,
-            self._mode_picker_text(),
-            self._mode_picker_keyboard(picker),
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.mode_picker = picker
 
-    async def _show_skills_picker(self, chat_id: int) -> None:
-        try:
-            skills = await self._codex().list_skills()
-        except Exception as exc:
-            self._log_failure(
-                "Could not list Codex skills",
-                exc,
-                event="telegram.skills.list_failed",
-            )
-            await self.telegram.send_message(chat_id, self._text("skills.label.list_failed"))
-            return
-        if not skills:
-            await self.telegram.send_message(chat_id, self._text("skills.label.empty"))
-            return
-        picker = SkillPicker(token=secrets.token_urlsafe(6), skills=skills)
-        message = await self.telegram.send_message(
-            chat_id,
-            self._skills_picker_text(picker),
-            self._skills_picker_keyboard(picker),
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.skill_picker = picker
 
-    def _skills_picker_text(self, picker: SkillPicker) -> str:
-        if picker.action == "menu":
-            selected = self._codex().state.pending_skill_name
-            selected_text = (
-                self._text("skills.values.selected", name=selected)
-                if selected
-                else self._text("skills.values.none_selected")
-            )
-            return self._text("skills.label.menu", selected=selected_text)
-        title = self._text(
-            "skills.label.list_title",
-            mode=self._text(f"skills.values.actions.{picker.action}"),
-            current=picker.page + 1,
-            total=page_count(len(picker.skills)),
-        )
-        if picker.action == "manage":
-            return f"{title}\n{self._text('skills.label.manage_notice')}"
-        return title
 
-    def _skills_picker_keyboard(self, picker: SkillPicker) -> dict[str, Any]:
-        if picker.action == "menu":
-            return {
-                "inline_keyboard": [
-                    [{"text": self._text("skills.buttons.use_button"), "callback_data": f"sk:{picker.token}:a:use"}],
-                    [{"text": self._text("skills.buttons.manage_button"), "callback_data": f"sk:{picker.token}:a:manage"}],
-                ]
-            }
-        start = picker.page * PAGE_SIZE
-        skills = picker.skills[start : start + PAGE_SIZE]
-        buttons = []
-        for offset, skill in enumerate(skills):
-            absolute_index = start + offset
-            label = skill.display_name or skill.name
-            if picker.action == "manage":
-                label = self._text(
-                    "skills.buttons.enabled_prefix" if skill.enabled else "skills.buttons.disabled_prefix",
-                    name=label,
-                )
-                action = "toggle"
-            else:
-                action = "use"
-            buttons.append({
-                "text": truncate(
-                    label,
-                    INLINE_BUTTON_TEXT_LIMIT,
-                    self.texts.system("values.ellipsis"),
-                ),
-                "callback_data": f"sk:{picker.token}:{action}:{absolute_index}",
-            })
-        rows = two_column_rows(buttons, 0)
-        total_pages = page_count(len(picker.skills))
-        if total_pages > 1:
-            nav: list[dict[str, str]] = []
-            if picker.page > 0:
-                nav.append({"text": "‹", "callback_data": f"sk:{picker.token}:p:{picker.page - 1}"})
-            nav.append({
-                "text": self._text("skills.buttons.page", current=picker.page + 1, total=total_pages),
-                "callback_data": f"sk:{picker.token}:n",
-            })
-            if picker.page + 1 < total_pages:
-                nav.append({"text": "›", "callback_data": f"sk:{picker.token}:p:{picker.page + 1}"})
-            rows.append(nav)
-        rows.append([{"text": self._text("common.buttons.back"), "callback_data": f"sk:{picker.token}:b"}])
-        return {"inline_keyboard": rows}
 
-    async def _show_memory_picker(self, chat_id: int) -> None:
-        codex = self._codex()
-        try:
-            settings = await codex.read_memory_settings()
-        except Exception as exc:
-            self._log_failure(
-                "Could not read Codex memory settings",
-                exc,
-                event="telegram.memories.read_failed",
-            )
-            await self.telegram.send_message(chat_id, self._text("memories.label.read_failed"))
-            return
-        current_mode = codex.current_memory_mode()
-        current_use_memories = (
-            current_mode == "enabled"
-            if current_mode is not None
-            else (settings.use_memories if codex.state.thread_id is None else None)
-        )
-        picker = MemoryPicker(
-            token=secrets.token_urlsafe(6),
-            thread_id=codex.state.thread_id,
-            settings=settings,
-            use_memories=current_use_memories,
-        )
-        message = await self.telegram.send_message(
-            chat_id,
-            self._memory_picker_text(picker),
-            self._memory_picker_keyboard(picker),
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.memory_picker = picker
 
-    def _memory_picker_text(self, picker: MemoryPicker) -> str:
-        if picker.confirming_generation:
-            return self._text("memories.label.generate_confirmation")
-        if picker.confirming_reset:
-            return self._text("memories.label.reset_confirmation")
-        if not picker.settings.feature_enabled:
-            return self._text("memories.label.feature_disabled")
-        return self._text(
-            "memories.label.prompt",
-            scope=self._text("memories.values.current_scope" if picker.thread_id else "memories.values.new_scope"),
-            use_state=self._text(
-                "memories.values.enabled"
-                if picker.use_memories is True
-                else "memories.values.disabled"
-                if picker.use_memories is False
-                else "memories.values.unknown"
-            ),
-            generate_state=self._text(
-                "memories.values.enabled" if picker.settings.generate_memories else "memories.values.disabled"
-            ),
-        )
 
-    def _memory_picker_keyboard(self, picker: MemoryPicker) -> dict[str, Any]:
-        if picker.confirming_generation:
-            return {
-                "inline_keyboard": [
-                    [{"text": self._text("memories.buttons.confirm_button"), "callback_data": f"mm:{picker.token}:confirm"}],
-                    [{"text": self._text("common.buttons.cancel"), "callback_data": f"mm:{picker.token}:cancel"}],
-                ]
-            }
-        if picker.confirming_reset:
-            return {
-                "inline_keyboard": [
-                    [{"text": self._text("memories.buttons.reset_confirm_button"), "callback_data": f"mm:{picker.token}:reset_confirm"}],
-                    [{"text": self._text("common.buttons.cancel"), "callback_data": f"mm:{picker.token}:cancel"}],
-                ]
-            }
-        if not picker.settings.feature_enabled:
-            return {
-                "inline_keyboard": [[{
-                    "text": self._text("memories.buttons.enable_button"),
-                    "callback_data": f"mm:{picker.token}:enable",
-                }]]
-            }
-        memory_mode_buttons = two_column_rows(
-            [
-                {
-                    "text": self._selected_button_label(
-                        self._text("memories.buttons.enable_use_button"),
-                        picker.use_memories is True,
-                    ),
-                    "callback_data": f"mm:{picker.token}:use:enabled",
-                },
-                {
-                    "text": self._selected_button_label(
-                        self._text("memories.buttons.disable_use_button"),
-                        picker.use_memories is False,
-                    ),
-                    "callback_data": f"mm:{picker.token}:use:disabled",
-                },
-            ],
-            0,
-        )
-        return {
-            "inline_keyboard": memory_mode_buttons + [
-                [{
-                    "text": self._text(
-                        "memories.buttons.generate_button",
-                        state=self._text("memories.values.enabled" if picker.settings.generate_memories else "memories.values.disabled"),
-                    ),
-                    "callback_data": f"mm:{picker.token}:generate",
-                }],
-                [{
-                    "text": self._text("memories.buttons.reset_button"),
-                    "callback_data": f"mm:{picker.token}:reset",
-                }],
-            ]
-        }
 
-    async def _show_files_picker(self, chat_id: int, user_id: int) -> None:
-        codex = self._codex()
-        picker = FilesPicker(
-            token=secrets.token_urlsafe(6),
-            owner_user_id=user_id,
-            current_path=codex.working_directory,
-            entries=[],
-        )
-        if not await self._load_files_picker(chat_id, picker, send_new=True):
-            await self.telegram.send_message(chat_id, self._text("files.label.read_failed"))
 
-    async def _load_files_picker(
-        self,
-        chat_id: int,
-        picker: FilesPicker,
-        *,
-        send_new: bool = False,
-    ) -> bool:
-        try:
-            browser = WorkspaceFileBrowser(self._workspace_root())
-            picker.current_path = browser.resolve_directory(picker.current_path)
-            picker.entries = await asyncio.to_thread(
-                browser.list_entries,
-                picker.current_path,
-            )
-            picker.page = min(picker.page, page_count(len(picker.entries)) - 1)
-            picker.selected_index = None
-        except WorkspaceFilesError as exc:
-            self._log_failure(
-                "Could not list project files on the host",
-                exc,
-                event="telegram.files.list_failed",
-                level=logging.WARNING,
-            )
-            return False
 
-        text = self._files_picker_text(picker)
-        markup = self._files_picker_keyboard(picker)
-        if send_new:
-            message = await self.telegram.send_message(chat_id, text, markup)
-            message_id = message.get("message_id")
-            if isinstance(message_id, int):
-                picker.message_id = message_id
-                self.files_picker = picker
-        elif picker.message_id is not None:
-            await self._edit_message(chat_id, picker.message_id, text, markup)
-        return True
 
-    def _files_picker_text(self, picker: FilesPicker) -> str:
-        return self._text("files.label.browser", path=str(picker.current_path))
 
-    def _files_picker_keyboard(self, picker: FilesPicker) -> dict[str, Any]:
-        rows: list[list[dict[str, str]]] = []
-        if picker.current_path != self._workspace_root():
-            rows.append([{"text": self._text("files.buttons.up"), "callback_data": f"fb:{picker.token}:u"}])
-        buttons: list[dict[str, str]] = []
-        start = picker.page * PAGE_SIZE
-        end = min(start + PAGE_SIZE, len(picker.entries))
-        for index in range(start, end):
-            entry = picker.entries[index]
-            if entry.kind == "directory":
-                label = f"📁 {entry.name}"
-                action = "o"
-            else:
-                label = f"📄 {entry.name} ({self._format_workspace_file_size(entry.size or 0)})"
-                action = "f"
-            buttons.append(
-                {
-                    "text": truncate(label, 60, self.texts.system("values.ellipsis")),
-                    "callback_data": f"fb:{picker.token}:{action}:{index}",
-                }
-            )
-        rows.extend(two_column_rows(buttons, 0))
-        count = page_count(len(picker.entries))
-        if count > 1:
-            rows.append(
-                navigation_row(
-                    picker.page,
-                    count,
-                    self.texts.system("buttons.pager.previous"),
-                    self.texts.system("buttons.pager.page", current="{current}", total="{total}"),
-                    self.texts.system("buttons.pager.next"),
-                    f"fb:{picker.token}",
-                )
-            )
-        return keyboard(rows)
 
-    def _files_detail_text(self, entry: WorkspaceEntry) -> str:
-        return self._text(
-            "files.label.detail",
-            path=str(entry.path),
-            size=self._format_workspace_file_size(entry.size or 0),
-        )
 
-    def _files_detail_keyboard(self, picker: FilesPicker) -> dict[str, Any]:
-        return keyboard(
-            [
-                [
-                    {"text": self._text("files.buttons.download"), "callback_data": f"fb:{picker.token}:d"},
-                    {"text": self._text("files.buttons.preview"), "callback_data": f"fb:{picker.token}:v"},
-                ],
-                [{"text": self._text("files.buttons.back"), "callback_data": f"fb:{picker.token}:b"}],
-            ]
-        )
 
-    @staticmethod
-    def _format_workspace_file_size(size: int) -> str:
-        if size >= 1024 * 1024:
-            return f"{size / (1024 * 1024):.1f} MB"
-        if size >= 1024:
-            return f"{size / 1024:.1f} KB"
-        return f"{size} B"
 
-    async def _handle_files_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.files_picker
-        if (
-            picker is None
-            or len(parts) < 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-            or incoming.user_id != picker.owner_user_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
-            return
-        action = parts[2]
-        if action == "p" and len(parts) == 4:
-            try:
-                page = int(parts[3])
-            except ValueError:
-                page = -1
-            if not 0 <= page < page_count(len(picker.entries)):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
-                return
-            picker.page = page
-            picker.selected_index = None
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._files_picker_text(picker),
-                self._files_picker_keyboard(picker),
-            )
-            return
-        if action == "i" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
-            return
-        if action == "u" and len(parts) == 3:
-            if picker.current_path == self._workspace_root():
-                await self.telegram.answer_callback(incoming.callback_id)
-                return
-            picker.current_path = picker.current_path.parent
-            picker.page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
-            if not await self._load_files_picker(incoming.chat_id, picker):
-                await self.telegram.send_message(incoming.chat_id, self._text("files.label.read_failed"))
-            return
-        if action in {"o", "f"} and len(parts) == 4:
-            try:
-                index = int(parts[3])
-                start = picker.page * PAGE_SIZE
-                if not start <= index < min(start + PAGE_SIZE, len(picker.entries)):
-                    raise ValueError
-                entry = picker.entries[index]
-            except (ValueError, IndexError):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
-                return
-            if action == "o" and entry.kind == "directory":
-                picker.current_path = entry.path
-                picker.page = 0
-                await self.telegram.answer_callback(incoming.callback_id)
-                if not await self._load_files_picker(incoming.chat_id, picker):
-                    await self.telegram.send_message(incoming.chat_id, self._text("files.label.read_failed"))
-                return
-            if action == "f" and entry.kind == "file":
-                picker.selected_index = index
-                await self.telegram.answer_callback(incoming.callback_id)
-                await self._edit_message(
-                    incoming.chat_id,
-                    incoming.message_id,
-                    self._files_detail_text(entry),
-                    self._files_detail_keyboard(picker),
-                )
-                return
-        if action == "b" and len(parts) == 3 and self._selected_workspace_file(picker):
-            picker.selected_index = None
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._files_picker_text(picker),
-                self._files_picker_keyboard(picker),
-            )
-            return
-        entry = self._selected_workspace_file(picker)
-        if entry is None or action not in {"d", "v"} or len(parts) != 3:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("files.label.stale"))
-            return
-        await self.telegram.answer_callback(incoming.callback_id)
-        if action == "v":
-            await self._send_workspace_preview(incoming.chat_id, picker, entry)
-        else:
-            await self._send_workspace_file(incoming.chat_id, picker, entry)
 
-    @staticmethod
-    def _selected_workspace_file(picker: FilesPicker) -> WorkspaceEntry | None:
-        index = picker.selected_index
-        if index is None or not 0 <= index < len(picker.entries):
-            return None
-        entry = picker.entries[index]
-        return entry if entry.kind == "file" else None
 
-    async def _send_workspace_preview(
-        self,
-        chat_id: int,
-        picker: FilesPicker,
-        entry: WorkspaceEntry,
-    ) -> None:
-        browser = WorkspaceFileBrowser(self._workspace_root())
-        try:
-            preview = await asyncio.to_thread(browser.read_text_preview, entry.path)
-        except WorkspacePreviewUnavailable:
-            await self.telegram.send_message(chat_id, self._text("files.label.preview_unavailable"))
-            return
-        except WorkspaceFilesError as exc:
-            self._log_failure(
-                "Could not preview project file on the host",
-                exc,
-                event="telegram.files.preview_failed",
-                level=logging.WARNING,
-            )
-            await self.telegram.send_message(chat_id, self._text("files.label.preview_unavailable"))
-            return
-        header = self._text(
-            "files.label.preview_header",
-            path=str(entry.path),
-        )
-        suffix = self._text("files.values.preview_truncated") if preview.truncated else ""
-        code_wrapper = "\n<pre></pre>"
-        available = max(
-            0,
-            TELEGRAM_TEXT_LIMIT
-            - utf16_length(header + code_wrapper)
-            - utf16_length(suffix),
-        )
-        body = self._truncate_utf16(preview.text, available)
-        clipped = len(body) < len(preview.text)
-        if clipped and not suffix:
-            suffix = self._text("files.values.preview_truncated")
-            available = max(
-                0,
-                TELEGRAM_TEXT_LIMIT
-                - utf16_length(header + code_wrapper)
-                - utf16_length(suffix),
-            )
-            body = self._truncate_utf16(preview.text, available)
-        code = f"\n<pre>{html.escape(body, quote=False)}</pre>" if body else ""
-        text = f"{header}{code}{suffix}"
-        await self.telegram.send_message(
-            chat_id,
-            text,
-            reply_to_message_id=picker.message_id,
-        )
-
-    @staticmethod
-    def _truncate_utf16(text: str, limit: int) -> str:
-        result: list[str] = []
-        length = 0
-        for character in text:
-            units = 2 if ord(character) > 0xFFFF else 1
-            if length + units > limit:
-                break
-            result.append(character)
-            length += units
-        return "".join(result)
-
-    async def _send_workspace_file(
-        self,
-        chat_id: int,
-        picker: FilesPicker,
-        entry: WorkspaceEntry,
-    ) -> None:
-        if entry.size is not None and entry.size > WorkspaceFileBrowser.max_download_bytes:
-            await self.telegram.send_message(chat_id, self._text("files.label.too_large"))
-            return
-        browser = WorkspaceFileBrowser(self._workspace_root())
-        with tempfile.TemporaryDirectory(prefix="telecodex-workspace-file-") as directory:
-            destination = Path(directory) / "download"
-            try:
-                filename, path = await asyncio.to_thread(browser.copy_file, entry.path, destination)
-                await self.telegram.send_document(
-                    chat_id,
-                    path,
-                    filename,
-                    reply_to_message_id=picker.message_id,
-                )
-            except WorkspaceFileTooLarge:
-                await self.telegram.send_message(chat_id, self._text("files.label.too_large"))
-            except TelegramApiError as exc:
-                self._log_failure(
-                    "Could not send host project file through Telegram",
-                    exc,
-                    event="telegram.files.telegram_upload_failed",
-                    level=logging.WARNING,
-                )
-                await self.telegram.send_message(chat_id, self._text("files.label.download_failed"))
-            except WorkspaceFilesError as exc:
-                self._log_failure(
-                    "Could not copy host project file",
-                    exc,
-                    event="telegram.files.download_failed",
-                    level=logging.WARNING,
-                )
-                await self.telegram.send_message(chat_id, self._text("files.label.download_failed"))
 
     async def _show_directory_picker(self, chat_id: int) -> None:
         root = self._workspace_root()
@@ -2821,17 +2351,6 @@ class TelegramUserController(McpTelegramMixin):
             picker.message_id = message_id
             self.chats_picker = picker
 
-    async def _show_permissions_picker(self, chat_id: int) -> None:
-        picker = PermissionsPicker(token=secrets.token_urlsafe(6))
-        message = await self.telegram.send_message(
-            chat_id,
-            self._permissions_picker_text(),
-            self._permissions_picker_keyboard(picker),
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.permissions_picker = picker
 
     async def _rename_chat(self, chat_id: int, name: str) -> None:
         normalized_name = " ".join(name.split())
@@ -3350,27 +2869,6 @@ class TelegramUserController(McpTelegramMixin):
                 reply_to_message_id=incoming.message_id,
             )
 
-    async def _handle_fast_command(self, incoming: IncomingMessage, argument: str) -> None:
-        requested = argument.strip().casefold()
-        if requested:
-            await self.telegram.send_message(incoming.chat_id, self._text("fast.label.usage"))
-            return
-        try:
-            current = await self._codex().toggle_fast_mode()
-        except FastTierUnavailableError:
-            await self.telegram.send_message(incoming.chat_id, self._text("fast.label.unavailable"))
-        except Exception as exc:
-            self._log_failure(
-                "Could not change the Codex Fast service tier",
-                exc,
-                event="telegram.command.fast_failed",
-            )
-            await self.telegram.send_message(incoming.chat_id, self._text("fast.label.failed"))
-        else:
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("fast.label.enabled" if current else "fast.label.disabled"),
-            )
 
     async def _recap_chat(self, incoming: IncomingMessage) -> None:
         codex = self._codex()
@@ -3410,379 +2908,18 @@ class TelegramUserController(McpTelegramMixin):
             incoming.message_id,
         )
 
-    async def _show_processes(self, chat_id: int) -> None:
-        codex = self._codex()
-        thread_id = codex.state.thread_id
-        if not thread_id:
-            await self.telegram.send_message(chat_id, self._text("ps.label.no_chat"))
-            return
-        try:
-            terminals = await codex.list_background_terminals()
-        except Exception as exc:
-            self._log_failure(
-                "Could not list Codex background terminals",
-                exc,
-                event="telegram.processes.list_failed",
-                rpc_method="thread/backgroundTerminals/list",
-                level=logging.WARNING,
-            )
-            await self.telegram.send_message(chat_id, self._text("ps.label.list_failed"))
-            return
-        if not terminals:
-            await self.telegram.send_message(chat_id, self._text("ps.label.empty"))
-            return
 
-        picker = ProcessesPicker(
-            token=secrets.token_urlsafe(6),
-            thread_id=thread_id,
-            terminals=terminals,
-        )
-        message = await self.telegram.send_message(
-            chat_id,
-            self._processes_picker_text(picker),
-            self._processes_picker_keyboard(picker),
-        )
-        message_id = message.get("message_id")
-        if isinstance(message_id, int):
-            picker.message_id = message_id
-            self.processes_picker = picker
 
-    def _terminal_command_text(self, terminal: CodexBackgroundTerminal) -> str:
-        command = redact_text(terminal.command, max_length=400)
-        command = _SENSITIVE_COMMAND_ARGUMENT.sub(r"\1[REDACTED]", command)
-        return truncate(command, 180, "…")
 
-    def _terminal_cwd_text(
-        self,
-        terminal: CodexBackgroundTerminal,
-        limit: int,
-    ) -> str:
-        cwd = terminal.cwd or self._text("ps.values.cwd_unknown")
-        return truncate(redact_text(cwd, max_length=600), limit, "…")
 
-    def _terminal_resources_text(self, terminal: CodexBackgroundTerminal) -> str:
-        pid = str(terminal.os_pid) if terminal.os_pid is not None else self._text("common.values.no_data")
-        cpu = (
-            f"{terminal.cpu_percent:.1f}%"
-            if terminal.cpu_percent is not None
-            else self._text("common.values.no_data")
-        )
-        memory = (
-            f"{terminal.rss_kb / 1024:.1f} МБ"
-            if terminal.rss_kb is not None
-            else self._text("common.values.no_data")
-        )
-        return self._text("ps.values.resources", pid=pid, cpu=cpu, memory=memory)
 
-    def _processes_picker_text(self, picker: ProcessesPicker) -> str:
-        total_pages = page_count(len(picker.terminals))
-        lines = [
-            self._text(
-                "ps.label.list_title",
-                current=picker.page + 1,
-                total=total_pages,
-            )
-        ]
-        start = picker.page * PAGE_SIZE
-        end = min(start + PAGE_SIZE, len(picker.terminals))
-        for index in range(start, end):
-            terminal = picker.terminals[index]
-            lines.append(
-                self._text(
-                    "ps.values.list_item",
-                    command=truncate(self._terminal_command_text(terminal), 120, "…"),
-                    cwd=self._terminal_cwd_text(terminal, 100),
-                    resources=self._terminal_resources_text(terminal),
-                )
-            )
-        return "\n\n".join(lines)
 
-    def _processes_picker_keyboard(self, picker: ProcessesPicker) -> dict[str, Any]:
-        count = page_count(len(picker.terminals))
-        start = picker.page * PAGE_SIZE
-        end = min(start + PAGE_SIZE, len(picker.terminals))
-        buttons = [
-            {
-                "text": truncate(
-                    self._terminal_command_text(picker.terminals[index]),
-                    64,
-                    self.texts.system("values.ellipsis"),
-                ),
-                "callback_data": f"ps:{picker.token}:v:{index}",
-            }
-            for index in range(start, end)
-        ]
-        rows = two_column_rows(buttons, 0)
-        if count > 1:
-            rows.append(
-                navigation_row(
-                    picker.page,
-                    count,
-                    self.texts.system("buttons.pager.previous"),
-                    self.texts.system("buttons.pager.page", current="{current}", total="{total}"),
-                    self.texts.system("buttons.pager.next"),
-                    f"ps:{picker.token}",
-                )
-            )
-        return keyboard(rows)
 
-    def _process_detail_text(self, terminal: CodexBackgroundTerminal) -> str:
-        return self._text(
-            "ps.label.detail",
-            command=truncate(self._terminal_command_text(terminal), 300, "…"),
-            cwd=self._terminal_cwd_text(terminal, 500),
-            resources=self._terminal_resources_text(terminal),
-        )
 
-    def _process_detail_keyboard(self, picker: ProcessesPicker) -> dict[str, Any]:
-        return keyboard(
-            [
-                [
-                    {
-                        "text": self._text("ps.buttons.stop_button"),
-                        "callback_data": f"ps:{picker.token}:s",
-                    }
-                ],
-                [
-                    {
-                        "text": self._text("common.buttons.back_to_list"),
-                        "callback_data": f"ps:{picker.token}:b",
-                    }
-                ],
-            ]
-        )
 
-    async def _refresh_process_picker(
-        self,
-        incoming: IncomingCallback,
-        picker: ProcessesPicker,
-    ) -> None:
-        picker.terminals = await self._codex().list_background_terminals()
-        picker.selected_process_id = None
-        if not picker.terminals:
-            self.processes_picker = None
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._text("ps.label.empty"),
-                {"inline_keyboard": []},
-            )
-            return
-        picker.page = min(picker.page, page_count(len(picker.terminals)) - 1)
-        await self._edit_message(
-            incoming.chat_id,
-            incoming.message_id,
-            self._processes_picker_text(picker),
-            self._processes_picker_keyboard(picker),
-        )
 
-    async def _handle_processes_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.processes_picker
-        if (
-            picker is None
-            or len(parts) < 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-            or self._codex().state.thread_id != picker.thread_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-            return
 
-        action = parts[2]
-        if action == "p" and len(parts) == 4:
-            try:
-                page = int(parts[3])
-            except ValueError:
-                page = -1
-            if page < 0 or page >= page_count(len(picker.terminals)):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-                return
-            picker.page = page
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._processes_picker_text(picker),
-                self._processes_picker_keyboard(picker),
-            )
-            return
-        if action == "i" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
-            return
-        if action == "v" and len(parts) == 4:
-            try:
-                index = int(parts[3])
-            except ValueError:
-                index = -1
-            if index < 0 or index >= len(picker.terminals):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-                return
-            process_id = picker.terminals[index].process_id
-            try:
-                terminals = await self._codex().list_background_terminals()
-                terminal = next((item for item in terminals if item.process_id == process_id), None)
-            except Exception as exc:
-                self._log_failure(
-                    "Could not refresh Codex background terminal details",
-                    exc,
-                    event="telegram.processes.read_failed",
-                    rpc_method="thread/backgroundTerminals/list",
-                    level=logging.WARNING,
-                )
-                terminal = None
-            if terminal is None:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-                return
-            picker.terminals = terminals
-            picker.selected_process_id = process_id
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._process_detail_text(terminal),
-                self._process_detail_keyboard(picker),
-            )
-            return
-        if action == "b" and len(parts) == 3:
-            try:
-                await self._refresh_process_picker(incoming, picker)
-            except Exception as exc:
-                self._log_failure(
-                    "Could not refresh Codex background terminal list",
-                    exc,
-                    event="telegram.processes.list_failed",
-                    rpc_method="thread/backgroundTerminals/list",
-                    level=logging.WARNING,
-                )
-                await self._edit_message(
-                    incoming.chat_id,
-                    incoming.message_id,
-                    self._text("ps.label.list_failed"),
-                    {"inline_keyboard": []},
-                )
-            await self.telegram.answer_callback(incoming.callback_id)
-            return
 
-        if action == "s" and len(parts) == 3 and picker.selected_process_id:
-            try:
-                terminals = await self._codex().list_background_terminals()
-                selected = next(
-                    (item for item in terminals if item.process_id == picker.selected_process_id),
-                    None,
-                )
-                if selected is None:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-                    return
-                stopped = await self._codex().terminate_background_terminal(
-                    picker.selected_process_id
-                )
-                if not stopped:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-                    return
-                await self._refresh_process_picker(incoming, picker)
-                await self.telegram.answer_callback(
-                    incoming.callback_id,
-                    self._text("ps.label.stopped"),
-                )
-            except Exception as exc:
-                self._log_failure(
-                    "Could not stop Codex background terminal",
-                    exc,
-                    event="telegram.processes.stop_failed",
-                    rpc_method="thread/backgroundTerminals/terminate",
-                    level=logging.WARNING,
-                )
-                await self.telegram.answer_callback(
-                    incoming.callback_id,
-                    self._text("ps.label.action_failed"),
-                )
-            return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("ps.label.stale"))
-
-    def _permissions_picker_text(self) -> str:
-        codex = self._codex()
-        mode = codex.permission_mode
-        managed = True
-        if mode is None and codex.state.thread_id:
-            managed = codex.state_store.load_thread(codex.state.thread_id).managed_by_telecodex
-        if mode is None and codex.state.thread_id and not managed:
-            description = self._text("permissions.values.current_unknown")
-        elif mode is None and codex.config.approval_policy != "on-request":
-            description = self._text(
-                "permissions.values.current_default",
-                policy=codex.config.approval_policy,
-            )
-        else:
-            description = self._text(
-                "permissions.values.current",
-                mode=self._text(f"permissions.buttons.mode_names.{mode or 'ask'}"),
-            )
-        if codex.is_busy:
-            description += self._text("permissions.values.next_turn")
-        scope_key = "permissions.values.current_thread" if codex.state.thread_id else "permissions.values.next_thread"
-        return self._text("permissions.label.prompt", scope=self._text(scope_key), current=description)
-
-    def _permissions_picker_keyboard(self, picker: PermissionsPicker) -> dict[str, Any]:
-        codex = self._codex()
-        selected = codex.permission_mode
-        managed = True
-        if selected is None and codex.state.thread_id:
-            managed = codex.state_store.load_thread(codex.state.thread_id).managed_by_telecodex
-        if selected is None and managed and codex.config.approval_policy == "on-request":
-            selected = "ask"
-        modes = PERMISSION_MODES
-        rows = []
-        for mode in modes:
-            label = self._text(f"permissions.buttons.mode_names.{mode}")
-            label = self._selected_button_label(label, mode == selected)
-            rows.append(
-                [{"text": label, "callback_data": f"pm:{picker.token}:{mode}"}]
-            )
-        return {"inline_keyboard": rows}
-
-    async def _handle_permissions_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.permissions_picker
-        if (
-            picker is None
-            or len(parts) != 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("permissions.label.stale"))
-            return
-        mode = parts[2]
-        if mode not in PERMISSION_MODES:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("permissions.label.stale"))
-            return
-        try:
-            self._codex().select_permission_mode(mode)
-        except Exception as exc:
-            self._log_failure(
-                "Could not select Codex permission mode",
-                exc,
-                event="telegram.permissions.select_failed",
-                permission_mode=mode,
-            )
-            await self.telegram.answer_callback(incoming.callback_id, self._text("permissions.label.save_failed"))
-            return
-        await self.telegram.answer_callback(
-            incoming.callback_id,
-            self._text("permissions.label.selection_saved"),
-        )
-        await self._edit_message(
-            incoming.chat_id,
-            incoming.message_id,
-            self._permissions_picker_text(),
-            self._permissions_picker_keyboard(picker),
-        )
 
     def _workspace_root(self) -> Path:
         return self.config.workspace_root
@@ -4286,781 +3423,6 @@ class TelegramUserController(McpTelegramMixin):
             return
         await self.telegram.answer_callback(incoming.callback_id, self._text("chats.label.stale"))
 
-    def _language_picker_keyboard(self, picker: LanguagePicker) -> dict[str, Any]:
-        selected = self._language()
-        rows = [
-            [
-                {
-                    "text": self._selected_button_label(
-                        self.texts.system(f"values.language_names.{language}"),
-                        language == selected,
-                    ),
-                    "callback_data": f"l:{picker.token}:{language}",
-                }
-            ]
-            for language in SUPPORTED_LANGUAGES
-        ]
-        return {"inline_keyboard": rows}
-
-    def _mode_picker_text(self) -> str:
-        return self._text(
-            "mode.label.prompt",
-            current=self._text(f"mode.buttons.names.{self._selected_output_mode()}"),
-        )
-
-    def _mode_picker_keyboard(self, picker: ModePicker) -> dict[str, Any]:
-        selected = self._selected_output_mode()
-        rows = [
-            [
-                {
-                    "text": self._selected_button_label(
-                        self._text(f"mode.buttons.names.{mode}"),
-                        mode == selected,
-                    ),
-                    "callback_data": f"om:{picker.token}:{mode}",
-                }
-            ]
-            for mode in ("answers", "quiet_answers", "detailed")
-        ]
-        return {"inline_keyboard": rows}
-
-    def _group_mode_name(self, mode: str) -> str:
-        key = "all_messages" if mode == "all" else "reply_or_trigger"
-        return self._text(f"groups.buttons.mode_names.{key}")
-
-    def _group_mode_picker_text(self) -> str:
-        mode = "all" if self._group_all_messages_to_codex() else "triggered"
-        return self._text(
-            "groups.label.mode_prompt",
-            current=self._group_mode_name(mode),
-        )
-
-    def _group_mode_picker_keyboard(self, picker: GroupModePicker) -> dict[str, Any]:
-        selected = "all" if self._group_all_messages_to_codex() else "triggered"
-        rows = []
-        for mode, name in (
-            ("triggered", "reply_or_trigger"),
-            ("all", "all_messages"),
-        ):
-            label = self._text(f"groups.buttons.mode_names.{name}")
-            label = self._selected_button_label(label, mode == selected)
-            rows.append(
-                [{"text": label, "callback_data": f"gm:{picker.token}:{mode}"}]
-            )
-        return {"inline_keyboard": rows}
-
-    async def _show_group_mode_picker(self, incoming: IncomingMessage) -> None:
-        if not self.is_group:
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("groups.label.only_group"),
-                reply_to_message_id=incoming.message_id,
-            )
-            return
-        if not self.attached:
-            await self.telegram.send_message(
-                incoming.chat_id,
-                self._text("groups.label.not_attached"),
-                reply_to_message_id=incoming.message_id,
-            )
-            return
-        picker = GroupModePicker(token=secrets.token_urlsafe(5))
-        message = await self.telegram.send_message(
-            incoming.chat_id,
-            self._group_mode_picker_text(),
-            self._group_mode_picker_keyboard(picker),
-            reply_to_message_id=incoming.message_id,
-        )
-        picker.message_id = message.get("message_id")
-        self.group_mode_picker = picker
-
-    async def _handle_group_mode_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.group_mode_picker
-        if (
-            not self.is_group
-            or not self.attached
-            or picker is None
-            or len(parts) != 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-            or parts[2] not in {"triggered", "all"}
-            or self._set_group_all_messages_to_codex is None
-        ):
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self._text("groups.label.mode_stale"),
-            )
-            return
-
-        enabled = parts[2] == "all"
-        try:
-            saved = self._set_group_all_messages_to_codex(enabled)
-        except Exception as exc:
-            self._log_failure(
-                "Could not save group message routing mode",
-                exc,
-                event="telegram.group.mode_save_failed",
-                enabled=enabled,
-            )
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self._text("groups.label.mode_save_failed"),
-            )
-            return
-        if not saved:
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self._text("groups.label.mode_stale"),
-            )
-            return
-        await self.telegram.answer_callback(
-            incoming.callback_id,
-            self._text("groups.label.mode_saved", mode=self._group_mode_name(parts[2])),
-        )
-        await self._edit_message(
-            incoming.chat_id,
-            incoming.message_id,
-            self._group_mode_picker_text(),
-            self._group_mode_picker_keyboard(picker),
-        )
-
-    async def _handle_mode_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.mode_picker
-        if (
-            picker is None
-            or len(parts) != 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mode.label.stale"))
-            return
-        mode = parts[2]
-        if mode not in OUTPUT_MODE_CHOICES:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mode.label.stale"))
-            return
-
-        try:
-            self._codex().select_output_mode(mode)
-        except Exception as exc:
-            self._log_failure(
-                "Could not select output mode",
-                exc,
-                event="telegram.output_mode.select_failed",
-                outcome=mode,
-            )
-            await self.telegram.answer_callback(incoming.callback_id, self._text("mode.label.save_failed"))
-            return
-        await self.telegram.answer_callback(incoming.callback_id)
-        await self._edit_message(
-            incoming.chat_id,
-            incoming.message_id,
-            self._mode_picker_text(),
-            self._mode_picker_keyboard(picker),
-        )
-
-    async def _handle_skills_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.skill_picker
-        if (
-            picker is None
-            or len(parts) < 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
-            return
-        action = parts[2]
-        if action == "a" and len(parts) == 4 and parts[3] in {"use", "manage"}:
-            picker.action = parts[3]
-            picker.page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._skills_picker_text(picker),
-                self._skills_picker_keyboard(picker),
-            )
-            return
-        if action == "b" and len(parts) == 3:
-            picker.action = "menu"
-            picker.page = 0
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._skills_picker_text(picker),
-                self._skills_picker_keyboard(picker),
-            )
-            return
-        if action == "n" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
-            return
-        if action == "p" and len(parts) == 4:
-            try:
-                page = int(parts[3])
-            except ValueError:
-                page = -1
-            if page < 0 or page >= page_count(len(picker.skills)):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
-                return
-            picker.page = page
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._skills_picker_text(picker),
-                self._skills_picker_keyboard(picker),
-            )
-            return
-        if action in {"use", "toggle"} and len(parts) == 4:
-            try:
-                index = int(parts[3])
-                first_index = picker.page * PAGE_SIZE
-                if not first_index <= index < min(first_index + PAGE_SIZE, len(picker.skills)):
-                    raise ValueError("Skill button is not on the current page")
-                skill = picker.skills[index]
-            except (IndexError, ValueError):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
-                return
-            if action == "use":
-                if not skill.enabled:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.disabled"))
-                    return
-                try:
-                    self._codex().select_skill_for_next_turn(skill)
-                except Exception as exc:
-                    self._log_failure(
-                        "Could not select a Codex skill",
-                        exc,
-                        event="telegram.skills.select_failed",
-                    )
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.select_failed"))
-                    return
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.selected_toast"))
-                self.skill_picker = None
-                await self._edit_message(
-                    incoming.chat_id,
-                    incoming.message_id,
-                    self._text("skills.label.selected_next", name=skill.display_name or skill.name),
-                    {"inline_keyboard": []},
-                )
-                return
-            try:
-                await self._codex().set_skill_enabled(skill, not skill.enabled)
-                if skill.enabled and (
-                    self._codex().state.pending_skill_name == skill.name
-                    and self._codex().state.pending_skill_path == skill.path
-                ):
-                    self._codex().clear_selected_skill()
-                picker.skills = await self._codex().list_skills(force_reload=True)
-            except Exception as exc:
-                self._log_failure(
-                    "Could not change Codex skill configuration",
-                    exc,
-                    event="telegram.skills.toggle_failed",
-                    skill_name=skill.name,
-                )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.update_failed"))
-                return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.updated"))
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._skills_picker_text(picker),
-                self._skills_picker_keyboard(picker),
-            )
-            return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("skills.label.stale"))
-
-    async def _handle_memory_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.memory_picker
-        if (
-            picker is None
-            or len(parts) not in {3, 4}
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-            or picker.thread_id != self._codex().state.thread_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.stale"))
-            return
-        codex = self._codex()
-        action = parts[2]
-        if action == "cancel" and (picker.confirming_generation or picker.confirming_reset):
-            picker.confirming_generation = False
-            picker.confirming_reset = False
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        if action == "reset":
-            picker.confirming_reset = True
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        if action == "reset_confirm" and picker.confirming_reset:
-            try:
-                await codex.reset_memories()
-                picker.confirming_reset = False
-            except Exception as exc:
-                self._log_failure(
-                    "Could not reset Codex memories",
-                    exc,
-                    event="telegram.memories.reset_failed",
-                )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.reset_failed"))
-                return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.reset_done"))
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        if action == "generate":
-            picker.confirming_generation = True
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        if action == "confirm" and picker.confirming_generation:
-            try:
-                await codex.toggle_memory_generation()
-                picker.settings = await codex.read_memory_settings()
-                picker.confirming_generation = False
-            except Exception as exc:
-                self._log_failure(
-                    "Could not change the Codex memory generation setting",
-                    exc,
-                    event="telegram.memories.generation_write_failed",
-                )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.save_failed"))
-                return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.saved"))
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        if action == "enable" and not picker.settings.feature_enabled:
-            try:
-                await codex.enable_memories_feature()
-                picker.settings = await codex.read_memory_settings()
-                picker.use_memories = picker.settings.use_memories
-            except Exception as exc:
-                self._log_failure(
-                    "Could not enable Codex memories for new chats",
-                    exc,
-                    event="telegram.memories.feature_enable_failed",
-                )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.save_failed"))
-                return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.feature_enabled"))
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        if (
-            action == "use"
-            and len(parts) == 4
-            and parts[3] in {"enabled", "disabled"}
-            and picker.settings.feature_enabled
-        ):
-            target_mode = parts[3]
-            try:
-                await codex.set_memory_mode(target_mode)
-                picker.use_memories = target_mode == "enabled"
-            except MemoryFeatureUnavailableError:
-                picker.settings = await codex.read_memory_settings()
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.feature_disabled"))
-                await self._edit_message(
-                    incoming.chat_id,
-                    incoming.message_id,
-                    self._memory_picker_text(picker),
-                    self._memory_picker_keyboard(picker),
-                )
-                return
-            except Exception as exc:
-                self._log_failure(
-                    "Could not change thread memory mode",
-                    exc,
-                    event="telegram.memories.thread_mode_failed",
-                )
-                await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.save_failed"))
-                return
-            await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.saved"))
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._memory_picker_text(picker),
-                self._memory_picker_keyboard(picker),
-            )
-            return
-        await self.telegram.answer_callback(incoming.callback_id, self._text("memories.label.stale"))
-
-    async def _handle_language_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.language_picker
-        if (
-            picker is None
-            or len(parts) != 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-        ):
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self.texts.system("label.language_picker_stale"),
-            )
-            return
-        language = parts[2]
-        if language not in SUPPORTED_LANGUAGES:
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self.texts.system("label.language_picker_invalid"),
-            )
-            return
-
-        self._codex().select_language(language)
-        await self.telegram.answer_callback(
-            incoming.callback_id,
-            self.texts.system(
-                "label.language_picker_saved",
-                language=self.texts.system(f"values.language_names.{language}"),
-            ),
-        )
-        await self._edit_message(
-            incoming.chat_id,
-            incoming.message_id,
-            self.texts.system("label.language_picker_prompt"),
-            self._language_picker_keyboard(picker),
-        )
-
-    async def _handle_model_callback(
-        self,
-        incoming: IncomingCallback,
-        parts: list[str],
-    ) -> None:
-        picker = self.model_picker
-        if (
-            picker is None
-            or len(parts) < 3
-            or parts[1] != picker.token
-            or incoming.message_id != picker.message_id
-        ):
-            await self.telegram.answer_callback(incoming.callback_id, self._text("models.label.expired"))
-            return
-
-        action = parts[2]
-        if picker.effort_model_index is not None:
-            model = picker.models[picker.effort_model_index]
-            if action == "b" and len(parts) == 3:
-                picker.effort_model_index = None
-                await self.telegram.answer_callback(incoming.callback_id)
-                await self._edit_message(
-                    incoming.chat_id,
-                    incoming.message_id,
-                    self._model_picker_text(picker),
-                    self._model_picker_keyboard(picker),
-                )
-                return
-            if action == "d" and len(parts) == 3:
-                effort = model.default_reasoning_effort
-            elif action == "e" and len(parts) == 4:
-                try:
-                    effort_index = int(parts[3])
-                    efforts = self._model_effort_options(model)
-                    if not 0 <= effort_index < len(efforts):
-                        raise ValueError("Effort button is not valid")
-                    effort = efforts[effort_index]
-                except ValueError:
-                    await self.telegram.answer_callback(incoming.callback_id, self._text("common.label.stale_button"))
-                    return
-            else:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("common.label.stale_button"))
-                return
-
-            try:
-                await self._codex().select_model(model.model, effort)
-            except Exception as exc:
-                self._log_failure(
-                    "Could not select Codex model and effort",
-                    exc,
-                    event="telegram.model.select_failed",
-                    model=model.model,
-                    effort=effort,
-                )
-                await self.telegram.answer_callback(
-                    incoming.callback_id,
-                    self._text("models.label.selection_failed"),
-                )
-                return
-            picker.current_model = model.model
-            picker.current_effort = effort
-            picker.effort_model_index = None
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self._text("models.label.selection_saved"),
-            )
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._model_picker_text(picker),
-                self._model_picker_keyboard(picker),
-            )
-            return
-
-        if action == "i" and len(parts) == 3:
-            await self.telegram.answer_callback(incoming.callback_id)
-            return
-
-        if action == "p" and len(parts) == 4:
-            try:
-                page = int(parts[3])
-            except ValueError:
-                page = -1
-            page_count = self._model_page_count(picker)
-            if page < 0 or page >= page_count:
-                await self.telegram.answer_callback(incoming.callback_id, self._text("models.label.invalid_page"))
-                return
-            picker.page = page
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._model_picker_text(picker),
-                self._model_picker_keyboard(picker),
-            )
-            return
-
-        if action == "r" and len(parts) == 3:
-            try:
-                await self._codex().select_model(None, None)
-                picker.current_model, picker.current_effort = await self._codex().current_model_settings(
-                    picker.models
-                )
-            except Exception as exc:
-                self._log_failure(
-                    "Could not reset Codex model and effort",
-                    exc,
-                    event="telegram.model.reset_failed",
-                )
-                await self.telegram.answer_callback(
-                    incoming.callback_id,
-                    self._text("models.label.selection_failed"),
-                )
-                return
-            await self.telegram.answer_callback(
-                incoming.callback_id,
-                self._text("models.label.selection_saved"),
-            )
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._model_picker_text(picker),
-                self._model_picker_keyboard(picker),
-            )
-            return
-        if action == "s" and len(parts) == 4:
-            try:
-                model_index = int(parts[3])
-            except ValueError:
-                model_index = -1
-            if model_index < 0 or model_index >= len(picker.models):
-                await self.telegram.answer_callback(incoming.callback_id, self._text("models.label.unknown"))
-                return
-            picker.effort_model_index = model_index
-            await self.telegram.answer_callback(incoming.callback_id)
-            await self._edit_message(
-                incoming.chat_id,
-                incoming.message_id,
-                self._model_picker_text(picker),
-                self._model_picker_keyboard(picker),
-            )
-            return
-        else:
-            await self.telegram.answer_callback(incoming.callback_id, self._text("common.label.stale_button"))
-            return
-
-    @staticmethod
-    def _model_page_count(picker: ModelPicker) -> int:
-        return max(1, (len(picker.models) + 7) // 8)
-
-    def _model_picker_text(self, picker: ModelPicker) -> str:
-        codex = self._codex()
-        if picker.effort_model_index is not None:
-            model = picker.models[picker.effort_model_index]
-            default_effort = (
-                self._effort_label(model.default_reasoning_effort)
-                if model.default_reasoning_effort
-                else self._text("models.values.codex_default_effort")
-            )
-            return self._text(
-                "models.label.effort_prompt",
-                model=model.display_name,
-                default_effort=default_effort,
-            )
-        current_model = picker.current_model
-        model_info = next((model for model in picker.models if model.model == current_model), None)
-        current = model_info.display_name if model_info else current_model or self._text("common.values.default_codex_model")
-        if picker.current_effort and (
-            model_info is None
-            or picker.current_effort != model_info.default_reasoning_effort
-        ):
-            current += self._text(
-                "models.values.current_effort",
-                effort=self._effort_label(picker.current_effort),
-            )
-        elif model_info and model_info.default_reasoning_effort:
-            current += self._text(
-                "models.values.current_effort_default",
-                effort=self._effort_label(model_info.default_reasoning_effort),
-            )
-        elif picker.current_effort:
-            current += self._text(
-                "models.values.current_effort",
-                effort=self._effort_label(picker.current_effort),
-            )
-        message = self._text("models.label.prompt", current=current)
-        if codex.is_busy:
-            message += self._text("models.values.busy_notice")
-        return message
-
-    def _model_picker_keyboard(self, picker: ModelPicker) -> dict[str, Any]:
-        selected_model = picker.current_model
-        if picker.effort_model_index is not None:
-            model = picker.models[picker.effort_model_index]
-            rows: list[list[dict[str, str]]] = []
-            default_effort = model.default_reasoning_effort
-            current_effort = picker.current_effort if selected_model == model.model else None
-            if default_effort:
-                default_label = self._text(
-                    "models.buttons.default_effort",
-                    effort=self._effort_label(default_effort),
-                )
-                default_label = self._selected_button_label(
-                    default_label,
-                    selected_model == model.model and current_effort in {None, default_effort},
-                )
-                rows.append(
-                    [{"text": default_label, "callback_data": f"m:{picker.token}:d"}]
-                )
-            efforts = self._model_effort_options(model)
-            effort_buttons = []
-            for effort_index, effort in enumerate(efforts):
-                label = self._selected_button_label(
-                    self._effort_label(effort),
-                    selected_model == model.model and current_effort == effort,
-                )
-                effort_buttons.append(
-                    {"text": label, "callback_data": f"m:{picker.token}:e:{effort_index}"}
-                )
-            rows.extend(two_column_rows(effort_buttons, 0))
-            rows.append([{"text": self._text("models.buttons.back"), "callback_data": f"m:{picker.token}:b"}])
-            return {"inline_keyboard": rows}
-
-        start = picker.page * 8
-        end = min(start + 8, len(picker.models))
-        model_buttons = []
-        for model_index in range(start, end):
-            model = picker.models[model_index]
-            label = self._selected_button_label(
-                model.display_name,
-                model.model == selected_model,
-            )
-            model_buttons.append(
-                {"text": label, "callback_data": f"m:{picker.token}:s:{model_index}"}
-            )
-        rows = two_column_rows(model_buttons, 0)
-
-        rows.append([{"text": self._text("models.buttons.reset"), "callback_data": f"m:{picker.token}:r"}])
-        page_count = self._model_page_count(picker)
-        if page_count > 1:
-            rows.append(
-                navigation_row(
-                    picker.page,
-                    page_count,
-                    self.texts.system("buttons.pager.previous"),
-                    self.texts.system("buttons.pager.page", current="{current}", total="{total}"),
-                    self.texts.system("buttons.pager.next"),
-                    f"m:{picker.token}",
-                )
-            )
-        return {"inline_keyboard": rows}
-
-    @staticmethod
-    def _model_effort_options(model: CodexModel) -> tuple[str, ...]:
-        return tuple(
-            effort
-            for effort in model.supported_reasoning_efforts
-            if effort != model.default_reasoning_effort
-        )
-
-    def _effort_label(self, effort: str) -> str:
-        labels = {
-            "none": "models.buttons.effort_names.none",
-            "minimal": "models.buttons.effort_names.minimal",
-            "low": "models.buttons.effort_names.low",
-            "medium": "models.buttons.effort_names.medium",
-            "high": "models.buttons.effort_names.high",
-            "xhigh": "models.buttons.effort_names.xhigh",
-            "max": "models.buttons.effort_names.max",
-        }
-        key = labels.get(effort)
-        return self._text(key) if key else effort
-
-    async def _on_codex_prompt(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if self.is_group and not self.attached:
-            if method == "item/tool/requestUserInput":
-                return {"answers": {}}
-            if method == "item/permissions/requestApproval":
-                return {"permissions": {}}
-            if method == "mcpServer/elicitation/request":
-                return {"action": "decline"}
-            return {"decision": "decline"}
-        if method == "mcpServer/elicitation/request":
-            return await self._ask_mcp_elicitation(params)
-        if method == "item/tool/requestUserInput":
-            return await self._ask_user_input(params)
-        if method == "item/permissions/requestApproval":
-            return await self._ask_permission(params)
-        decision = await self._ask_approval(method, params)
-        return {"decision": decision}
 
 
 
@@ -5068,205 +3430,27 @@ class TelegramUserController(McpTelegramMixin):
 
 
 
-    async def _ask_permission(self, params: dict[str, Any]) -> dict[str, Any]:
-        if self.is_group and not self.attached:
-            return {"permissions": {}}
-        requested = params.get("permissions", {})
-        if not isinstance(requested, dict):
-            return {"permissions": {}}
-        network = requested.get("network")
-        filesystem = requested.get("fileSystem")
-        network_requested = isinstance(network, dict) and network.get("enabled")
-        filesystem_requested = isinstance(filesystem, dict) and any(
-            filesystem.get(key) for key in ("read", "write", "entries")
-        )
-        if filesystem_requested and not network_requested:
-            await self.telegram.send_message(
-                self.chat_id,
-                self._text("permissions.label.filesystem_denied"),
-            )
-            return {"permissions": {}}
-        if not network_requested:
-            return {"permissions": {}}
 
-        token = secrets.token_urlsafe(7)
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        reason = self._truncate(
-            str(params.get("reason") or self._text("permissions.values.default_reason")),
-            500,
-        )
-        text_key = (
-            "permissions.label.network_request_with_filesystem"
-            if filesystem_requested
-            else "permissions.label.network_request"
-        )
-        await self._pause_typing()
-        message = await self.telegram.send_message(
-            self.chat_id,
-            self._text(
-                text_key,
-                filesystem_note=self._text("permissions.values.filesystem_note"),
-                reason=reason,
-            ),
-            {
-                "inline_keyboard": two_column_rows(
-                    [
-                        {"text": self._text("approval.label.allow_task"), "callback_data": f"ap:{token}:once"},
-                        {"text": self._text("approval.label.allow_session"), "callback_data": f"ap:{token}:session"},
-                    ],
-                    0,
-                )
-                + [[{"text": self._text("common.buttons.decline"), "callback_data": f"ap:{token}:deny"}]]
-            },
-        )
-        if self.is_group and not self.attached:
-            return {"permissions": {}}
-        self._codex().add_pending_prompt(message["message_id"])
-        self.pending_approvals[token] = PendingApproval(
-            future=future,
-            message_id=message["message_id"],
-            chat_id=self.chat_id,
-        )
-        try:
-            choice = await asyncio.wait_for(future, timeout=900)
-        except asyncio.TimeoutError:
-            choice = "decline"
-        finally:
-            self.pending_approvals.pop(token, None)
-            if not self._shutdown_in_progress:
-                self._codex().remove_pending_prompt(message["message_id"])
-            self._resume_typing()
 
-        grants: dict[str, Any] = {}
-        if choice in {"accept", "acceptForSession"}:
-            if isinstance(network, dict) and network.get("enabled"):
-                grants["network"] = {"enabled": True}
-        result: dict[str, Any] = {"permissions": grants}
-        if choice == "acceptForSession":
-            result["scope"] = "session"
-        return result
 
-    async def _ask_approval(self, method: str, params: dict[str, Any]) -> str:
-        token = secrets.token_urlsafe(7)
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        reason = params.get("reason")
-        network = params.get("networkApprovalContext")
-        command = params.get("command")
-        if isinstance(network, dict):
-            kind = self._text("approval.values.network_kind")
-            detail = self._text(
-                "approval.values.network_detail",
-                protocol=network.get("protocol") or "network",
-                host=network.get("host") or "unknown host",
-            )
-        else:
-            kind = self._text(
-                "approval.values.filesystem_kind"
-                if method == "item/fileChange/requestApproval"
-                else "approval.values.command_kind"
-            )
-            if isinstance(command, str) and command:
-                detail = self._text("approval.values.command_detail", command=self._truncate(command, 500))
-            else:
-                detail = str(reason or self._text("approval.values.default_reason"))
-        text = self._text("approval.label.request", kind=kind, detail=self._truncate(detail, 700))
-        keyboard = {
-            "inline_keyboard": two_column_rows(
-                [
-                    {"text": self._text("approval.label.allow_once"), "callback_data": f"ap:{token}:once"},
-                    {"text": self._text("approval.label.allow_session"), "callback_data": f"ap:{token}:session"},
-                ],
-                0,
-            )
-            + [[{"text": self._text("common.buttons.decline"), "callback_data": f"ap:{token}:deny"}]]
-        }
-        await self._pause_typing()
-        message = await self.telegram.send_message(self.chat_id, text, keyboard)
-        if self.is_group and not self.attached:
-            return "cancel"
-        self._codex().add_pending_prompt(message["message_id"])
-        pending = PendingApproval(
-            future=future,
-            message_id=message["message_id"],
-            chat_id=self.chat_id,
-        )
-        self.pending_approvals[token] = pending
-        try:
-            return await asyncio.wait_for(future, timeout=900)
-        except asyncio.TimeoutError:
-            return "cancel"
-        finally:
-            self.pending_approvals.pop(token, None)
-            if not self._shutdown_in_progress:
-                self._codex().remove_pending_prompt(message["message_id"])
-            self._resume_typing()
 
-    async def _ask_user_input(self, params: dict[str, Any]) -> dict[str, Any]:
-        questions = params.get("questions", [])
-        if not isinstance(questions, list) or not questions:
-            return {"answers": {}}
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        prompt_lines = [self._text("user_input.label.title")]
-        for index, question in enumerate(questions, start=1):
-            if isinstance(question, dict):
-                question_text = question.get("question")
-                if not isinstance(question_text, str) or not question_text:
-                    question_text = self._text("user_input.values.question_fallback")
-                prompt_lines.append(
-                    self._text("user_input.values.numbered_question", index=index, question=question_text)
-                )
-                options = question.get("options")
-                if isinstance(options, list):
-                    labels = [str(item.get("label", "")) for item in options if isinstance(item, dict)]
-                    if labels:
-                        prompt_lines.append(self._text("user_input.values.options", options=", ".join(labels)))
-        prompt_lines.append(self._text("user_input.label.instructions"))
-        await self._pause_typing()
-        message = await self.telegram.send_message(
-            self.chat_id,
-            "\n".join(prompt_lines),
-        )
-        if self.is_group and not self.attached:
-            return {"answers": {}}
-        self._codex().add_pending_prompt(message["message_id"])
-        self.pending_user_input = PendingUserInput(future=future, questions=questions)
-        try:
-            return await asyncio.wait_for(future, timeout=900)
-        except asyncio.TimeoutError:
-            await self._edit_message(
-                self.chat_id,
-                message["message_id"],
-                self._text("user_input.label.timeout"),
-            )
-            return {"answers": {}}
-        finally:
-            if self.pending_user_input and self.pending_user_input.future is future:
-                self.pending_user_input = None
-            if not self._shutdown_in_progress:
-                self._codex().remove_pending_prompt(message["message_id"])
-            self._resume_typing()
 
-    async def _resolve_user_input(self, text: str) -> None:
-        pending = self.pending_user_input
-        if pending is None or pending.future.done():
-            return
-        lines = [line.strip() for line in text.splitlines()]
-        answers: dict[str, dict[str, list[str]]] = {}
-        for index, question in enumerate(pending.questions):
-            if not isinstance(question, dict) or not isinstance(question.get("id"), str):
-                continue
-            if len(pending.questions) == 1:
-                answer = text.strip()
-            else:
-                answer = lines[index] if index < len(lines) else ""
-            answers[question["id"]] = {"answers": [answer] if answer else []}
-        pending.future.set_result({"answers": answers})
-        self.pending_user_input = None
-        if self._shows_detailed_activity():
-            await self.telegram.send_message(self.chat_id, self._text("user_input.label.delivered"))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     async def _on_codex_status(
         self,

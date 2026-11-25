@@ -196,7 +196,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             workspace = Path(temporary) / "project"
             workspace.mkdir()
             controller, telegram, codex = self._controller(workspace)
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/shell"))
                 shell = controller.shell_session
                 self.assertIsNotNone(shell)
@@ -237,7 +237,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             codex_thread = CodexThread("thread-other", "Other project", None, target, None, "cli")
             controller, telegram, codex = self._controller(workspace)
             codex.threads = [codex_thread]
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/shell"))
                 await controller._handle_message(IncomingMessage(2, 2, 101, 101, "private", "/chats"))
                 picker = controller.chats_picker
@@ -262,7 +262,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             controller, _telegram, codex = self._controller(workspace)
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/shell"))
                 shell = controller.shell_session
                 await controller._handle_message(IncomingMessage(2, 2, 101, 101, "private", "/fork"))
@@ -280,7 +280,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             codex.state.pending_turn = PendingTurnState(
                 "thread-current", "turn-current", 1, 1, phase="running"
             )
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/shell"))
                 await controller._handle_message(IncomingMessage(2, 2, 101, 101, "private", "/new"))
                 picker = controller.directory_picker
@@ -319,7 +319,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             codex.state.pending_turn = PendingTurnState(
                 "thread-current", "turn-current", 1, 1, phase="running"
             )
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/shell"))
                 await controller._handle_message(IncomingMessage(2, 2, 101, 101, "private", "/chats"))
                 picker = controller.chats_picker
@@ -355,7 +355,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             codex.state.pending_turn = PendingTurnState(
                 "thread-current", "turn-current", 1, 1, phase="running"
             )
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(1, 1, 101, 101, "private", "/shell"))
                 await controller._handle_message(IncomingMessage(2, 2, 101, 101, "private", "/chats"))
                 picker = controller.chats_picker
@@ -461,7 +461,7 @@ class NonIdealUserFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("/new", telegram.messages[-1][1])
             self.assertEqual(_codex.messages, [])
 
-            with patch("telecodex.telegram.user_controller.ShellSession", FakeShellSession):
+            with patch("telecodex.telegram.user_shell.ShellSession", FakeShellSession):
                 await controller._handle_message(IncomingMessage(2, 2, 101, 101, "private", "/shell"))
                 session = controller.shell_session
                 await controller._handle_message(IncomingMessage(3, 3, 101, 101, "private", "/neww"))

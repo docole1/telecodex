@@ -1,28 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import monotonic, time as epoch_time
 from typing import Any
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from telecodex.codex.command_prompts import GOAL_CONTINUATION_PROMPT
-from telecodex.codex.app_server import CodexAppServer, build_app_server_environment
-from telecodex.codex.mcp import (
-    McpServer,
-    http_config,
-    parse_stdio_server_status,
-    stdio_config,
-    validate_requested_env_names,
-    validate_server_name,
-)
+from telecodex.codex.app_server import CodexAppServer
+from telecodex.codex.mcp import McpServer
+from telecodex.codex.mcp_session import CodexMcpSession
+from telecodex.codex.settings import CodexSettings
+from telecodex.codex.turn_history import CodexTurnHistory
 from telecodex.codex.permissions import (
     PERMISSION_MODES,
     WORKSPACE_PERMISSION_PROFILE,
@@ -30,6 +23,30 @@ from telecodex.codex.permissions import (
     turn_permission_params,
 )
 from telecodex.codex.rpc import RpcError
+from telecodex.codex.types import (
+    ActiveThreadWriterError,
+    AssistantMessageCallback,
+    CodexBackgroundTerminal,
+    CodexChatBusyError,
+    CodexGoal,
+    CodexMemorySettings,
+    CodexModel,
+    CodexRecoverySnapshot,
+    CodexServiceTier,
+    CodexSkill,
+    CodexThread,
+    CollaborationModeUnavailableError,
+    CommandFinishedCallback,
+    FastTierUnavailableError,
+    FinishedCallback,
+    GoalNotFoundError,
+    GoalUnavailableError,
+    MemoryFeatureUnavailableError,
+    PendingTurnDeliveryError,
+    PromptCallback,
+    SelectedSkillUnavailableError,
+    StatusCallback,
+)
 from telecodex.config import AppConfig
 from telecodex.i18n import SUPPORTED_LANGUAGES, TextCatalog, load_text_catalog
 from telecodex.logging_config import (
@@ -55,139 +72,6 @@ MANUAL_COMPACTION_IDLE_POLL_SECONDS = 2.0
 
 def _is_active_thread_writer_error(error: BaseException) -> bool:
     return "already has an active writer" in str(error).casefold()
-
-StatusCallback = Callable[[str, object | None, str | None], Awaitable[None]]
-CommandFinishedCallback = Callable[[dict[str, Any]], Awaitable[None]]
-FinishedCallback = Callable[[dict[str, Any]], Awaitable[None]]
-PromptCallback = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
-AssistantMessageCallback = Callable[[str, str], Awaitable[None]]
-
-
-@dataclass(frozen=True)
-class CodexServiceTier:
-    id: str
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class CodexModel:
-    model: str
-    display_name: str
-    is_default: bool
-    supported_reasoning_efforts: tuple[str, ...]
-    default_reasoning_effort: str | None
-    service_tiers: tuple[CodexServiceTier, ...] = ()
-    default_service_tier: str | None = None
-
-
-@dataclass(frozen=True)
-class CodexSkill:
-    name: str
-    description: str
-    path: str
-    enabled: bool
-    display_name: str | None = None
-
-
-@dataclass(frozen=True)
-class CodexMemorySettings:
-    feature_enabled: bool
-    use_memories: bool
-    generate_memories: bool
-    user_config_version: str | None
-
-
-class PendingTurnDeliveryError(RuntimeError):
-    """A previous Codex result could not be delivered, so a new turn was not started."""
-
-
-class ActiveThreadWriterError(RuntimeError):
-    """A Codex thread is currently owned by another app-server client."""
-
-
-class CodexChatBusyError(RuntimeError):
-    """The active Codex chat is busy with an operation that cannot be steered."""
-
-
-class CollaborationModeUnavailableError(RuntimeError):
-    """The connected app-server does not expose a requested collaboration mode."""
-
-
-class SelectedSkillUnavailableError(RuntimeError):
-    """A previously selected skill no longer appears in the active workspace."""
-
-
-class FastTierUnavailableError(RuntimeError):
-    """The current Codex model does not advertise a Fast service tier."""
-
-
-class MemoryFeatureUnavailableError(RuntimeError):
-    """Local Codex memories are disabled in the user's Codex Home configuration."""
-
-
-class GoalUnavailableError(RuntimeError):
-    """The connected Codex app-server does not expose native Goals."""
-
-
-class GoalNotFoundError(RuntimeError):
-    """The selected Codex thread does not have a Goal to control."""
-
-
-@dataclass(frozen=True)
-class CodexGoal:
-    objective: str
-    status: str
-    token_budget: int | None
-    tokens_used: int
-    time_used_seconds: int
-
-
-@dataclass(frozen=True)
-class CodexThread:
-    thread_id: str
-    name: str | None
-    preview: str | None
-    cwd: Path
-    updated_at: int | float | None
-    source: str | None
-
-    @property
-    def label(self) -> str:
-        title = self.name or self.preview or self.cwd.name or str(self.cwd)
-        return " ".join(title.split())
-
-
-@dataclass(frozen=True)
-class CodexBackgroundTerminal:
-    process_id: str
-    command: str
-    cwd: str | None
-    os_pid: int | None
-    cpu_percent: float | None
-    rss_kb: int | None
-
-
-@dataclass(frozen=True)
-class CodexRecoverySnapshot:
-    thread_id: str
-    thread_status: str | None
-    active_turn_id: str | None
-    terminals: tuple[CodexBackgroundTerminal, ...]
-    compaction_pending: bool = False
-
-    @property
-    def has_active_work(self) -> bool:
-        return (
-            self.thread_status != "idle"
-            or self.active_turn_id is not None
-            or self.compaction_pending
-        )
-
-    @property
-    def requires_confirmation(self) -> bool:
-        return self.has_active_work or bool(self.terminals)
-
 
 class CodexSession:
     def __init__(
@@ -224,16 +108,9 @@ class CodexSession:
         self._reported_activity_items: set[tuple[str, str]] = set()
         self._agent_activity_states: dict[str, str] = {}
         self._agent_activity_labels: dict[str, str] = {}
-        self._mcp_oauth_logins: dict[str, str] = {}
-        self._mcp_oauth_legacy_logins: list[str] = []
         self._mcp_reported_startup: dict[str, str] = {}
         self._assistant_message_ids: set[str] = set()
         self._assistant_message_tasks: list[asyncio.Task[None]] = []
-        self._collaboration_mode = "default"
-        self._thread_model: str | None = None
-        self._thread_effort: str | None = None
-        self._thread_service_tier: str | None = None
-        self._collaboration_mode_presets: dict[str, dict[str, Any]] | None = None
         self._ready_lock = asyncio.Lock()
         self._reconciliation_lock = asyncio.Lock()
         self._pending_delivery_lock = asyncio.Lock()
@@ -272,6 +149,30 @@ class CodexSession:
             )
         else:
             self.app_server = app_server_factory(self._on_event, self._on_server_request)
+        self.mcp_manager = CodexMcpSession(
+            config=config,
+            app_server=self.app_server,
+            ensure_app_server=self._ensure_app_server,
+            state=lambda: self.state,
+            loaded_thread_id=lambda: self._loaded_thread_id,
+            thread_log_fields=self._thread_log_fields,
+            schedule_status=self._schedule_status,
+        )
+        self.turn_history = CodexTurnHistory(self.app_server)
+        self.settings_manager = CodexSettings(
+            config=self.config,
+            app_server=self.app_server,
+            state=self.state,
+            state_store=self.state_store,
+            ensure_app_server=self._ensure_app_server,
+            ensure_thread=self._ensure_thread,
+            unsubscribe_thread=self._unsubscribe_thread,
+            is_busy=lambda: self.is_busy,
+            thread_log_fields=self._thread_log_fields,
+            working_directory=lambda: self.working_directory,
+            sync_persisted_thread_selection=self._sync_persisted_thread_selection,
+            is_config_version_conflict=self._is_config_version_conflict,
+        )
 
     def _thread_log_fields(self, thread_id: str | None = None) -> dict[str, str | None]:
         selected_thread_id = thread_id or self.state.thread_id
@@ -477,8 +378,8 @@ class CodexSession:
         input_items = [{"type": "text", "text": text}]
         if additional_input_items:
             input_items.extend(additional_input_items)
-        selected_skill_name = self.state.pending_skill_name
-        selected_skill_path = self.state.pending_skill_path
+        selected_skill_name = self.settings_manager.pending_skill_name
+        selected_skill_path = self.settings_manager.pending_skill_path
         selected_skill_display_name: str | None = None
         if selected_skill_name and selected_skill_path:
             skills = await self.list_skills(force_reload=True)
@@ -551,7 +452,7 @@ class CodexSession:
                         "text_length": len(text),
                         "input_item_count": len(input_items),
                         "model": self._effective_model() or "default",
-                        "effort": self.state.selected_effort or "default",
+                        "effort": self.settings_manager.selected_effort or "default",
                         **self._thread_log_fields(),
                         **self._turn_log_fields(self.active_turn_id),
                     },
@@ -579,19 +480,19 @@ class CodexSession:
         model = self._effective_model()
         if model:
             params["model"] = model
-        if self.state.selected_effort is not None:
-            params["effort"] = self.state.selected_effort
+        if self.settings_manager.selected_effort is not None:
+            params["effort"] = self.settings_manager.selected_effort
         service_tier = self.selected_service_tier
         if service_tier:
             params["serviceTier"] = service_tier
-        if self._collaboration_mode == "plan":
-            plan_model = self._thread_model or model
+        if self.settings_manager.collaboration_mode == "plan":
+            plan_model = self.settings_manager.thread_model or model
             if plan_model:
                 plan_settings: dict[str, Any] = {
                     "model": plan_model,
                     "developer_instructions": None,
                 }
-                effort = self._thread_effort or self.state.selected_effort
+                effort = self.settings_manager.thread_effort or self.settings_manager.selected_effort
                 if effort:
                     plan_settings["reasoning_effort"] = effort
                 params["collaborationMode"] = {"mode": "plan", "settings": plan_settings}
@@ -613,7 +514,7 @@ class CodexSession:
                 "input_item_count": len(input_items),
                 "has_attachments": len(input_items) > 1,
                 "model": model or "default",
-                "effort": self.state.selected_effort or "default",
+                "effort": self.settings_manager.selected_effort or "default",
                 "permission_mode": self.permission_mode or self.config.approval_policy,
                 **self._thread_log_fields(),
             },
@@ -652,7 +553,7 @@ class CodexSession:
                 "turn_status": turn_status if isinstance(turn_status, str) else None,
                 "duration_ms": round((monotonic() - request_started_at) * 1000),
                 "model": model or "default",
-                "effort": self.state.selected_effort or "default",
+                "effort": self.settings_manager.selected_effort or "default",
                 **self._thread_log_fields(),
             },
         )
@@ -932,449 +833,26 @@ class CodexSession:
                 )
                 raise
 
-    async def list_models(self) -> list[CodexModel]:
-        await self._ensure_app_server()
-        models: list[CodexModel] = []
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        while True:
-            params: dict[str, Any] = {"includeHidden": False, "limit": 100}
-            if cursor is not None:
-                params["cursor"] = cursor
-            result = await self.app_server.request("model/list", params, timeout_seconds=60)
-            data = result.get("data", [])
-            if not isinstance(data, list):
-                raise RuntimeError("Codex app-server returned an invalid model list")
-            for raw_model in data:
-                if not isinstance(raw_model, dict) or raw_model.get("hidden") is True:
-                    continue
-                model = raw_model.get("model")
-                display_name = raw_model.get("displayName")
-                if not isinstance(model, str) or not model:
-                    continue
-                if not isinstance(display_name, str) or not display_name:
-                    display_name = model
-                raw_efforts = raw_model.get("supportedReasoningEfforts", [])
-                efforts: list[str] = []
-                if isinstance(raw_efforts, list):
-                    for option in raw_efforts:
-                        effort = option.get("reasoningEffort") if isinstance(option, dict) else None
-                        if isinstance(effort, str) and effort and effort not in efforts:
-                            efforts.append(effort)
-                default_effort = raw_model.get("defaultReasoningEffort")
-                service_tiers: list[CodexServiceTier] = []
-                raw_service_tiers = raw_model.get("serviceTiers", [])
-                if isinstance(raw_service_tiers, list):
-                    for tier in raw_service_tiers:
-                        if not isinstance(tier, dict):
-                            continue
-                        tier_id = tier.get("id")
-                        tier_name = tier.get("name")
-                        if not isinstance(tier_id, str) or not tier_id:
-                            continue
-                        if not isinstance(tier_name, str) or not tier_name:
-                            tier_name = tier_id
-                        description = tier.get("description")
-                        service_tiers.append(
-                            CodexServiceTier(
-                                id=tier_id,
-                                name=tier_name,
-                                description=description if isinstance(description, str) else "",
-                            )
-                        )
-                default_service_tier = raw_model.get("defaultServiceTier")
-                models.append(
-                    CodexModel(
-                        model=model,
-                        display_name=display_name,
-                        is_default=raw_model.get("isDefault") is True,
-                        supported_reasoning_efforts=tuple(efforts),
-                        default_reasoning_effort=(
-                            default_effort if isinstance(default_effort, str) and default_effort else None
-                        ),
-                        service_tiers=tuple(service_tiers),
-                        default_service_tier=(
-                            default_service_tier
-                            if isinstance(default_service_tier, str) and default_service_tier
-                            else None
-                        ),
-                    )
-                )
-            next_cursor = result.get("nextCursor")
-            if next_cursor is None:
-                return models
-            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
-                raise RuntimeError("Codex app-server returned an invalid model-list cursor")
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
 
-    async def current_model_settings(
-        self,
-        models: list[CodexModel],
-    ) -> tuple[str | None, str | None]:
-        """Return the effective model and effort for the selected thread or user."""
-        self._sync_persisted_thread_selection()
-        await self._ensure_app_server()
 
-        thread_id = self.state.thread_id
-        if thread_id:
-            try:
-                response = await self.app_server.request(
-                    "thread/read",
-                    {"threadId": thread_id},
-                    timeout_seconds=30,
-                )
-            except Exception as exc:
-                log_exception(
-                    logger,
-                    "Could not refresh model settings for the selected Codex thread",
-                    exc,
-                    event="codex.model_picker.thread_read_failed",
-                    level=logging.WARNING,
-                    **self._thread_log_fields(thread_id),
-                )
-            else:
-                self._capture_thread_settings(response)
-            model = self._thread_model or self.state.selected_model or self.config.codex_model
-            effort = self._thread_effort or self.state.selected_effort
-        else:
-            model = self.state.selected_model or self.config.codex_model
-            effort = self.state.selected_effort
 
-        if not model:
-            model = self.default_model(models)
-        return model, effort
 
-    @property
-    def selected_model(self) -> str | None:
-        return self.state.selected_model
 
-    @property
-    def selected_effort(self) -> str | None:
-        return self.state.selected_effort
 
-    @property
-    def selected_service_tier(self) -> str | None:
-        return self._thread_service_tier if self.state.thread_id else self.state.selected_service_tier
 
-    async def toggle_fast_mode(self) -> bool:
-        """Toggle the catalog-provided Fast tier for this thread/context."""
-        models = await self.list_models()
-        await self._ensure_app_server()
-        if self.state.thread_id:
-            await self._ensure_thread(create_if_missing=False)
-            model_name = self._thread_model or self.state.selected_model or self.config.codex_model
-        else:
-            model_name = self.state.selected_model or self.config.codex_model or self.default_model(models)
-        model = next((item for item in models if item.model == model_name), None)
-        if model is None:
-            raise RuntimeError("Codex could not resolve the active model")
-        fast_tier = next(
-            (tier for tier in model.service_tiers if tier.name.casefold() == "fast"),
-            None,
-        )
-        if fast_tier is None:
-            raise FastTierUnavailableError("The active Codex model does not advertise Fast mode")
 
-        current_tier = self.selected_service_tier or model.default_service_tier
-        current_fast = current_tier == fast_tier.id
-        target_enabled = not current_fast
-        target_tier = fast_tier.id if target_enabled else "default"
-        thread_id = self.state.thread_id
-        try:
-            if thread_id:
-                await self.app_server.request(
-                    "thread/settings/update",
-                    {"threadId": thread_id, "serviceTier": target_tier},
-                    timeout_seconds=30,
-                )
-            self.state.selected_service_tier = target_tier
-            self.state_store.save(self.state)
-            self._thread_service_tier = target_tier
-        finally:
-            if thread_id and not self.is_busy:
-                await self._unsubscribe_thread()
-        logger.info(
-            "Codex service tier updated",
-            extra={
-                "event": "codex.thread.service_tier.updated",
-                "service_tier": target_tier,
-                "model": model.model,
-                **self._thread_log_fields(thread_id),
-            },
-        )
-        return target_enabled
 
-    async def list_skills(self, *, force_reload: bool = False) -> list[CodexSkill]:
-        await self._ensure_app_server()
-        cwd = str(self.working_directory)
-        result = await self.app_server.request(
-            "skills/list",
-            {"cwds": [cwd], "forceReload": force_reload},
-            timeout_seconds=60,
-        )
-        entries = result.get("data")
-        if not isinstance(entries, list):
-            raise RuntimeError("Codex app-server returned an invalid skills list")
-        entry = next(
-            (item for item in entries if isinstance(item, dict) and item.get("cwd") == cwd),
-            None,
-        )
-        if entry is None:
-            return []
-        raw_skills = entry.get("skills")
-        if not isinstance(raw_skills, list):
-            raise RuntimeError("Codex app-server returned invalid skill metadata")
-        skills: list[CodexSkill] = []
-        for item in raw_skills:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name")
-            path = item.get("path")
-            if not isinstance(name, str) or not name or not isinstance(path, str) or not path:
-                continue
-            interface = item.get("interface")
-            display_name = interface.get("displayName") if isinstance(interface, dict) else None
-            short_description = interface.get("shortDescription") if isinstance(interface, dict) else None
-            description = item.get("description")
-            if isinstance(short_description, str) and short_description:
-                description = short_description
-            skills.append(
-                CodexSkill(
-                    name=name,
-                    description=description if isinstance(description, str) else "",
-                    path=path,
-                    enabled=item.get("enabled") is True,
-                    display_name=display_name if isinstance(display_name, str) and display_name else None,
-                )
-            )
-        return sorted(skills, key=lambda skill: (skill.name.casefold(), skill.path))
 
-    async def set_skill_enabled(self, skill: CodexSkill, enabled: bool) -> None:
-        await self._ensure_app_server()
-        await self.app_server.request(
-            "skills/config/write",
-            {"name": skill.name, "path": skill.path, "enabled": enabled},
-            timeout_seconds=30,
-        )
 
-    def select_skill_for_next_turn(self, skill: CodexSkill) -> None:
-        if not skill.enabled:
-            raise ValueError("Disabled skills cannot be selected for a turn")
-        self.state.pending_skill_name = skill.name
-        self.state.pending_skill_path = skill.path
-        self.state_store.save(self.state)
 
-    def clear_selected_skill(self) -> None:
-        if self.state.pending_skill_name is None and self.state.pending_skill_path is None:
-            return
-        self.state.pending_skill_name = None
-        self.state.pending_skill_path = None
-        self.state_store.save(self.state)
 
-    def current_memory_mode(self) -> str | None:
-        thread_id = self.state.thread_id
-        if thread_id:
-            return self.state_store.load_thread(thread_id).memory_mode
-        return self.state.selected_memory_mode
 
-    async def read_memory_settings(self) -> CodexMemorySettings:
-        await self._ensure_app_server()
-        result = await self.app_server.request(
-            "config/read",
-            {"includeLayers": True},
-            timeout_seconds=30,
-        )
-        config = result.get("config")
-        config = config if isinstance(config, dict) else {}
-        features = config.get("features")
-        features = features if isinstance(features, dict) else {}
-        memories = config.get("memories")
-        memories = memories if isinstance(memories, dict) else {}
-        version: str | None = None
-        layers = result.get("layers")
-        if isinstance(layers, list):
-            for layer in layers:
-                source = layer.get("name") if isinstance(layer, dict) else None
-                if isinstance(source, dict) and source.get("type") == "user":
-                    candidate = layer.get("version")
-                    if isinstance(candidate, str) and candidate:
-                        version = candidate
-                    break
-        return CodexMemorySettings(
-            feature_enabled=features.get("memories") is True,
-            use_memories=memories.get("use_memories") is True,
-            generate_memories=memories.get("generate_memories") is True,
-            user_config_version=version,
-        )
 
-    async def set_memory_mode(self, mode: str) -> None:
-        if mode not in {"enabled", "disabled"}:
-            raise ValueError("Unsupported memory mode")
-        settings = await self.read_memory_settings()
-        if not settings.feature_enabled:
-            raise MemoryFeatureUnavailableError("The Codex memories feature is disabled")
 
-        thread_id = self.state.thread_id
-        if thread_id:
-            await self._ensure_thread(create_if_missing=False)
-            thread_id = self.state.thread_id
-            if not thread_id:
-                raise RuntimeError("The active Codex chat changed")
-            await self.app_server.request(
-                "thread/memoryMode/set",
-                {"threadId": thread_id, "mode": mode},
-                timeout_seconds=30,
-            )
-            thread_state = self.state_store.load_thread(thread_id)
-            thread_state.memory_mode = mode
-            self.state_store.save_thread(thread_id, thread_state)
-        self.state.selected_memory_mode = mode
-        self.state_store.save(self.state)
-        if thread_id and not self.is_busy:
-            await self._unsubscribe_thread(source="memory_mode_update")
 
-    async def set_memory_generation(self, enabled: bool) -> None:
-        settings = await self.read_memory_settings()
-        if not settings.feature_enabled:
-            raise MemoryFeatureUnavailableError("The Codex memories feature is disabled")
-        if settings.generate_memories is enabled:
-            return
-        try:
-            await self._write_global_memory_setting("memories.generate_memories", enabled, settings)
-        except RpcError as exc:
-            if not self._is_config_version_conflict(exc):
-                raise
-            refreshed = await self.read_memory_settings()
-            if not refreshed.feature_enabled:
-                raise MemoryFeatureUnavailableError("The Codex memories feature is disabled") from exc
-            if refreshed.generate_memories is not enabled:
-                await self._write_global_memory_setting("memories.generate_memories", enabled, refreshed)
-        updated = await self.read_memory_settings()
-        if updated.generate_memories is not enabled:
-            raise RuntimeError("Codex policy prevented changing the global memory generation setting")
-
-    async def toggle_memory_generation(self) -> bool:
-        settings = await self.read_memory_settings()
-        if not settings.feature_enabled:
-            raise MemoryFeatureUnavailableError("The Codex memories feature is disabled")
-        target = not settings.generate_memories
-        try:
-            await self._write_global_memory_setting("memories.generate_memories", target, settings)
-        except RpcError as exc:
-            if not self._is_config_version_conflict(exc):
-                raise
-            refreshed = await self.read_memory_settings()
-            if not refreshed.feature_enabled:
-                raise MemoryFeatureUnavailableError("The Codex memories feature is disabled") from exc
-            target = not refreshed.generate_memories
-            await self._write_global_memory_setting(
-                "memories.generate_memories",
-                target,
-                refreshed,
-            )
-        updated = await self.read_memory_settings()
-        if updated.generate_memories is not target:
-            raise RuntimeError("Codex policy prevented changing the global memory generation setting")
-        return target
-
-    async def enable_memories_feature(self) -> None:
-        settings = await self.read_memory_settings()
-        if settings.feature_enabled:
-            return
-        try:
-            await self._write_global_memory_setting("features.memories", True, settings)
-        except RpcError as exc:
-            if not self._is_config_version_conflict(exc):
-                raise
-            refreshed = await self.read_memory_settings()
-            if not refreshed.feature_enabled:
-                await self._write_global_memory_setting("features.memories", True, refreshed)
-        updated = await self.read_memory_settings()
-        if not updated.feature_enabled:
-            raise RuntimeError("Codex policy prevents enabling memories for new threads")
-
-    async def reset_memories(self) -> None:
-        settings = await self.read_memory_settings()
-        if not settings.feature_enabled:
-            raise MemoryFeatureUnavailableError("The Codex memories feature is disabled")
-        await self.app_server.request("memory/reset", timeout_seconds=60)
-
-    async def _write_global_memory_setting(
-        self,
-        key_path: str,
-        value: bool,
-        settings: CodexMemorySettings,
-        *,
-        reload_user_config: bool = True,
-    ) -> None:
-        params: dict[str, Any] = {
-            "edits": [{"keyPath": key_path, "mergeStrategy": "replace", "value": value}],
-            "reloadUserConfig": reload_user_config,
-        }
-        if settings.user_config_version:
-            params["expectedVersion"] = settings.user_config_version
-        await self.app_server.request("config/batchWrite", params, timeout_seconds=30)
 
     async def list_mcp_servers(self) -> list[McpServer]:
-        """Return configured MCP servers and the selected thread's runtime catalog."""
-        await self._ensure_app_server()
-        thread_id = (
-            self.state.thread_id
-            if self.state.thread_id and self._loaded_thread_id == self.state.thread_id
-            else None
-        )
-        try:
-            return await self._list_mcp_server_status(thread_id)
-        except RpcError as exc:
-            if not thread_id:
-                raise
-            logger.info(
-                "MCP thread status is unavailable; falling back to app-level server status",
-                extra={
-                    "event": "codex.mcp.thread_status.fallback",
-                    "rpc_code": exc.code,
-                    **self._thread_log_fields(thread_id),
-                },
-            )
-            return await self._list_mcp_server_status(None)
-
-    async def _list_mcp_server_status(self, thread_id: str | None) -> list[McpServer]:
-        servers: list[McpServer] = []
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        for _ in range(100):
-            params: dict[str, Any] = {
-                "detail": "toolsAndAuthOnly",
-                "limit": 100,
-            }
-            if cursor:
-                params["cursor"] = cursor
-            if thread_id:
-                params["threadId"] = thread_id
-            result = await self.app_server.request(
-                "mcpServerStatus/list",
-                params,
-                timeout_seconds=60,
-            )
-            data = result.get("data")
-            if not isinstance(data, list):
-                raise RuntimeError("Codex app-server returned an invalid MCP server list")
-            servers.extend(
-                parse_stdio_server_status(item)
-                for item in data
-                if isinstance(item, dict)
-            )
-            next_cursor = result.get("nextCursor")
-            if not isinstance(next_cursor, str) or not next_cursor:
-                break
-            if next_cursor in seen_cursors:
-                raise RuntimeError("Codex app-server returned a repeated MCP pagination cursor")
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
-        else:
-            raise RuntimeError("Codex app-server MCP list exceeded the pagination limit")
-        return sorted(servers, key=lambda item: item.name.casefold())
+        return await self.mcp_manager.list_mcp_servers()
 
     async def add_mcp_stdio_server(
         self,
@@ -1384,12 +862,7 @@ class CodexSession:
         cwd: str | None,
         env_vars: tuple[str, ...],
     ) -> None:
-        name = validate_server_name(name)
-        checked_env_vars = validate_requested_env_names(env_vars, self.config.mcp_env_vars)
-        await self._add_mcp_server_config(
-            name,
-            stdio_config(command, args, cwd, checked_env_vars),
-        )
+        await self.mcp_manager.add_mcp_stdio_server(name, command, args, cwd, env_vars)
 
     async def add_mcp_http_server(
         self,
@@ -1398,234 +871,155 @@ class CodexSession:
         auth: str,
         bearer_token_env_var: str | None = None,
     ) -> None:
-        name = validate_server_name(name)
-        if auth == "bearer":
-            if bearer_token_env_var is None:
-                raise ValueError("Choose an allowlisted environment variable for the bearer token")
-            validate_requested_env_names((bearer_token_env_var,), self.config.mcp_env_vars)
-        await self._add_mcp_server_config(
-            name,
-            http_config(url, auth, bearer_token_env_var),
-        )
-
-    async def _add_mcp_server_config(self, name: str, server_config: dict[str, Any]) -> None:
-        await self._ensure_app_server()
-        for attempt in range(2):
-            current = await self._read_mcp_config()
-            configured = current.get("config")
-            configured = configured if isinstance(configured, dict) else {}
-            servers = configured.get("mcp_servers")
-            servers = servers if isinstance(servers, dict) else {}
-            if name in servers:
-                raise ValueError("An MCP server with this name already exists")
-            params: dict[str, Any] = {
-                "edits": [{
-                    "keyPath": f"mcp_servers.{name}",
-                    "mergeStrategy": "upsert",
-                    "value": server_config,
-                }],
-                "reloadUserConfig": False,
-            }
-            version = self._user_config_version(current)
-            if version:
-                params["expectedVersion"] = version
-            try:
-                await self.app_server.request(
-                    "config/batchWrite",
-                    params,
-                    timeout_seconds=30,
-                )
-                return
-            except RpcError as exc:
-                if attempt == 0 and self._is_config_version_conflict(exc):
-                    continue
-                raise
-        raise RuntimeError("Could not safely update the shared Codex MCP configuration")
+        await self.mcp_manager.add_mcp_http_server(name, url, auth, bearer_token_env_var)
 
     async def set_mcp_server_enabled(self, name: str, enabled: bool) -> None:
-        name = validate_server_name(name)
-        await self._ensure_app_server()
-        for attempt in range(2):
-            current = await self._read_mcp_config()
-            configured = current.get("config")
-            configured = configured if isinstance(configured, dict) else {}
-            servers = configured.get("mcp_servers")
-            if not isinstance(servers, dict) or name not in servers:
-                raise ValueError("MCP server configuration was not found")
-            params: dict[str, Any] = {
-                "edits": [{
-                    "keyPath": f"mcp_servers.{name}.enabled",
-                    "mergeStrategy": "replace",
-                    "value": enabled,
-                }],
-                "reloadUserConfig": False,
-            }
-            version = self._user_config_version(current)
-            if version:
-                params["expectedVersion"] = version
-            try:
-                await self.app_server.request(
-                    "config/batchWrite",
-                    params,
-                    timeout_seconds=30,
-                )
-                return
-            except RpcError as exc:
-                if attempt == 0 and self._is_config_version_conflict(exc):
-                    continue
-                raise
-        raise RuntimeError("Could not safely update the shared Codex MCP configuration")
+        await self.mcp_manager.set_mcp_server_enabled(name, enabled)
 
     async def remove_mcp_server(self, name: str) -> None:
-        name = validate_server_name(name)
-        await self._run_codex_mcp_command("remove", name)
+        await self.mcp_manager.remove_mcp_server(name)
 
     async def logout_mcp_server(self, name: str) -> None:
-        name = validate_server_name(name)
-        await self._run_codex_mcp_command("logout", name)
-
-    async def _run_codex_mcp_command(self, action: str, name: str) -> None:
-        if action not in {"remove", "logout"}:
-            raise ValueError("Unsupported Codex MCP CLI operation")
-        process = await asyncio.create_subprocess_exec(
-            self.config.codex_bin,
-            "mcp",
-            action,
-            name,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=build_app_server_environment(os.environ, ()),
-        )
-        try:
-            _, _ = await asyncio.wait_for(process.communicate(), timeout=30)
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-            raise RuntimeError("Codex MCP management command timed out") from None
-        if process.returncode != 0:
-            raise RuntimeError("Codex MCP management command failed")
-
-    async def _read_mcp_config(self) -> dict[str, Any]:
-        return await self.app_server.request(
-            "config/read",
-            {"includeLayers": True},
-            timeout_seconds=30,
-        )
-
-    @staticmethod
-    def _user_config_version(config: dict[str, Any]) -> str | None:
-        layers = config.get("layers")
-        if not isinstance(layers, list):
-            return None
-        for layer in layers:
-            if not isinstance(layer, dict):
-                continue
-            name = layer.get("name")
-            if isinstance(name, dict) and name.get("type") == "user":
-                version = layer.get("version")
-                return version if isinstance(version, str) and version else None
-        return None
+        await self.mcp_manager.logout_mcp_server(name)
 
     async def reload_mcp_config(self) -> bool:
-        """Queue a config reload for loaded threads without interrupting turns."""
-        if not self.app_server.is_running:
-            return False
-        await self.app_server.request(
-            "config/mcpServer/reload",
-            params_as_null=True,
-            timeout_seconds=30,
-        )
-        return True
+        return await self.mcp_manager.reload_mcp_config()
 
     async def start_mcp_oauth(self, name: str) -> tuple[str, str | None]:
-        name = validate_server_name(name)
-        await self._ensure_app_server()
-        params: dict[str, Any] = {"name": name}
-        if self.state.thread_id:
-            params["threadId"] = self.state.thread_id
-        result = await self.app_server.request(
-            "mcpServer/oauth/login",
-            params,
-            timeout_seconds=30,
-        )
-        authorization_url = result.get("authorizationUrl")
-        login_id = result.get("loginId")
-        if not isinstance(authorization_url, str):
-            raise RuntimeError("Codex app-server did not return an MCP authorization URL")
-        parsed = urlsplit(authorization_url)
-        try:
-            _ = parsed.port
-        except ValueError as exc:
-            raise RuntimeError("Codex app-server returned an invalid MCP authorization URL") from exc
-        if (
-            parsed.scheme not in {"https", "http"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise RuntimeError("Codex app-server returned an invalid MCP authorization URL")
-        if isinstance(login_id, str) and login_id:
-            self._mcp_oauth_logins[login_id] = name
-        else:
-            self._mcp_oauth_legacy_logins.append(name)
-        return authorization_url, login_id if isinstance(login_id, str) else None
+        return await self.mcp_manager.start_mcp_oauth(name)
 
     async def mcp_oauth_uses_remote_callback(self, name: str) -> bool:
-        """Return whether the configured OAuth callback can be reached from another device."""
-        name = validate_server_name(name)
-        await self._ensure_app_server()
-        result = await self._read_mcp_config()
-        config = result.get("config")
-        config = config if isinstance(config, dict) else {}
-        servers = config.get("mcp_servers")
-        servers = servers if isinstance(servers, dict) else {}
-        server = servers.get(name)
-        server = server if isinstance(server, dict) else {}
-        oauth = server.get("oauth")
-        oauth = oauth if isinstance(oauth, dict) else {}
-        callback_url = oauth.get("callback_url")
-        if not isinstance(callback_url, str) or not callback_url:
-            callback_url = config.get("mcp_oauth_callback_url")
-        if not isinstance(callback_url, str) or not callback_url:
-            return False
-        try:
-            parsed = urlsplit(callback_url)
-            host = parsed.hostname
-            _ = parsed.port
-        except ValueError:
-            return False
-        if not parsed.scheme or not host:
-            return False
-        try:
-            address = ipaddress.ip_address(host)
-            return not address.is_loopback and not address.is_unspecified
-        except ValueError:
-            return host.casefold() != "localhost"
+        return await self.mcp_manager.mcp_oauth_uses_remote_callback(name)
 
     def _handle_mcp_oauth_completed(self, params: dict[str, Any]) -> None:
-        name = params.get("name")
-        login_id = params.get("loginId")
-        success = params.get("success") is True
-        if not isinstance(name, str):
-            return
-        if isinstance(login_id, str):
-            expected_name = self._mcp_oauth_logins.pop(login_id, None)
-            if expected_name != name:
-                return
-        elif name not in self._mcp_oauth_legacy_logins:
-            return
-        else:
-            self._mcp_oauth_legacy_logins.remove(name)
-        self._schedule_status(
-            "status.label.mcp_oauth_success" if success else "status.label.mcp_oauth_failed",
-            name,
-        )
+        self.mcp_manager._handle_mcp_oauth_completed(params)
 
     @staticmethod
     def _is_config_version_conflict(error: RpcError) -> bool:
-        message = str(error).casefold()
-        return "version" in message or "stale" in message
+        return CodexMcpSession._is_config_version_conflict(error)
+
+    async def _read_persisted_turn(self, thread_id: str, turn_id: str) -> dict[str, Any] | None:
+        return await self.turn_history._read_persisted_turn(thread_id, turn_id)
+
+    async def last_assistant_message(self, thread_id: str) -> str:
+        async with asyncio.timeout(20):
+            await self._ensure_app_server()
+            return await self.turn_history.last_assistant_message(thread_id)
+
+    async def _read_turn_text(
+        self,
+        thread_id: str,
+        turn_id: str | None,
+        *,
+        timeout_seconds: int = 60,
+    ) -> str:
+        return await self.turn_history._read_turn_text(
+            thread_id,
+            turn_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @staticmethod
+    def _turn_error_message(turn: dict[str, Any]) -> str | None:
+        return CodexTurnHistory._turn_error_message(turn)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    async def list_models(self) -> list[CodexModel]:
+        return await self.settings_manager.list_models()
+
+    async def current_model_settings(self, models: list[CodexModel]) -> tuple[str | None, str | None]:
+        return await self.settings_manager.current_model_settings(models)
+
+    @property
+    def selected_model(self) -> str | None:
+        return self.settings_manager.selected_model
+
+    @property
+    def selected_effort(self) -> str | None:
+        return self.settings_manager.selected_effort
+
+    @property
+    def selected_service_tier(self) -> str | None:
+        return self.settings_manager.selected_service_tier
+
+    async def toggle_fast_mode(self) -> bool:
+        return await self.settings_manager.toggle_fast_mode()
+
+    async def list_skills(self, *, force_reload: bool=False) -> list[CodexSkill]:
+        return await self.settings_manager.list_skills(force_reload=force_reload)
+
+    async def set_skill_enabled(self, skill: CodexSkill, enabled: bool) -> None:
+        await self.settings_manager.set_skill_enabled(skill, enabled)
+
+    def select_skill_for_next_turn(self, skill: CodexSkill) -> None:
+        self.settings_manager.select_skill_for_next_turn(skill)
+
+    def clear_selected_skill(self) -> None:
+        self.settings_manager.clear_selected_skill()
+
+    def current_memory_mode(self) -> str | None:
+        return self.settings_manager.current_memory_mode()
+
+    async def read_memory_settings(self) -> CodexMemorySettings:
+        return await self.settings_manager.read_memory_settings()
+
+    async def set_memory_mode(self, mode: str) -> None:
+        await self.settings_manager.set_memory_mode(mode)
+
+    async def set_memory_generation(self, enabled: bool) -> None:
+        await self.settings_manager.set_memory_generation(enabled)
+
+    async def toggle_memory_generation(self) -> bool:
+        return await self.settings_manager.toggle_memory_generation()
+
+    async def enable_memories_feature(self) -> None:
+        await self.settings_manager.enable_memories_feature()
+
+    async def reset_memories(self) -> None:
+        await self.settings_manager.reset_memories()
+
+    def default_model(self, models: list[CodexModel]) -> str | None:
+        return self.settings_manager.default_model(models)
+
+    async def select_model(self, model: str | None, effort: str | None=None) -> None:
+        await self.settings_manager.select_model(model, effort)
+
+    def _effective_model(self) -> str | None:
+        return self.settings_manager._effective_model()
+
+    @property
+    def collaboration_mode(self) -> str:
+        return self.settings_manager.collaboration_mode
+
+    async def toggle_plan_mode(self) -> str:
+        return await self.settings_manager.toggle_plan_mode()
+
+    async def set_collaboration_mode(self, mode: str, *, create_if_missing: bool=False) -> None:
+        await self.settings_manager.set_collaboration_mode(mode, create_if_missing=create_if_missing)
+
+    async def _update_collaboration_mode(self, mode: str, *, unsubscribe: bool=True) -> None:
+        await self.settings_manager._update_collaboration_mode(mode, unsubscribe=unsubscribe)
+
+    async def _list_collaboration_mode_presets(self) -> dict[str, dict[str, Any]]:
+        return await self.settings_manager._list_collaboration_mode_presets()
+
+    def _capture_thread_settings(self, response: dict[str, Any]) -> None:
+        self.settings_manager._capture_thread_settings(response)
 
     @property
     def pending_turn(self) -> PendingTurnState | None:
@@ -1807,205 +1201,14 @@ class CodexSession:
         )
         return True
 
-    def default_model(self, models: list[CodexModel]) -> str | None:
-        if self.config.codex_model:
-            return self.config.codex_model
-        return next((model.model for model in models if model.is_default), None)
 
-    async def select_model(self, model: str | None, effort: str | None = None) -> None:
-        # A turn uses the model parameters captured at turn/start. Updating the
-        # thread settings while it runs therefore changes the next turn only.
-        await self._ensure_app_server()
-        if self.state.thread_id:
-            await self._ensure_thread()
-        service_tier = self._thread_service_tier or self.state.selected_service_tier
-        configured_model = model if model is not None else self.config.codex_model
-        if service_tier and service_tier != "default":
-            models = await self.list_models()
-            target_model = configured_model or self.default_model(models)
-            target_info = next((item for item in models if item.model == target_model), None)
-            if target_info is None or not any(tier.id == service_tier for tier in target_info.service_tiers):
-                service_tier = None
-        if self.state.thread_id:
-            settings: dict[str, Any] = {
-                "threadId": self.state.thread_id,
-                "model": configured_model,
-                "effort": effort,
-            }
-            if (self._thread_service_tier or self.state.selected_service_tier) != service_tier:
-                settings["serviceTier"] = service_tier
-            await self.app_server.request(
-                "thread/settings/update",
-                settings,
-                timeout_seconds=30,
-            )
-            self._thread_model = configured_model
-            self._thread_effort = effort
-            self._thread_service_tier = service_tier
-            await self._unsubscribe_thread()
-        self.state.selected_model = model
-        self.state.selected_effort = effort
-        self.state.selected_service_tier = service_tier
-        self.state_store.save(self.state)
 
-    def _effective_model(self) -> str | None:
-        return self.state.selected_model or self.config.codex_model
 
-    @property
-    def collaboration_mode(self) -> str:
-        return self._collaboration_mode
 
-    async def toggle_plan_mode(self) -> str:
-        if not self.state.thread_id:
-            raise RuntimeError("There is no active Codex chat")
-        await self._ensure_thread(create_if_missing=False)
-        target_mode = "default" if self._collaboration_mode == "plan" else "plan"
-        await self._update_collaboration_mode(target_mode)
-        return target_mode
 
-    async def set_collaboration_mode(
-        self,
-        mode: str,
-        *,
-        create_if_missing: bool = False,
-    ) -> None:
-        if mode not in {"plan", "default"}:
-            raise ValueError("Unsupported collaboration mode")
-        if not self.state.thread_id and not create_if_missing:
-            raise RuntimeError("There is no active Codex chat")
-        if create_if_missing and not self.state.thread_id:
-            await self._ensure_app_server()
-            presets = await self._list_collaboration_mode_presets()
-            if mode not in presets:
-                raise CollaborationModeUnavailableError(
-                    f"Codex app-server does not provide the {mode} collaboration mode"
-                )
-        previous_thread_id = self.state.thread_id
-        await self._ensure_thread(create_if_missing=create_if_missing)
-        created_thread = self.state.thread_id != previous_thread_id
-        await self._update_collaboration_mode(mode, unsubscribe=not created_thread)
 
-    async def _update_collaboration_mode(self, mode: str, *, unsubscribe: bool = True) -> None:
-        thread_id = self.state.thread_id
-        if not thread_id:
-            raise RuntimeError("There is no active Codex chat")
 
-        try:
-            presets = await self._list_collaboration_mode_presets()
-            preset = presets.get(mode)
-            if preset is None:
-                raise CollaborationModeUnavailableError(
-                    f"Codex app-server does not provide the {mode} collaboration mode"
-                )
 
-            model = (
-                self._thread_model
-                or self._effective_model()
-                or self.config.codex_model
-                or preset.get("model")
-            )
-            if not isinstance(model, str) or not model:
-                raise RuntimeError("Codex app-server did not report the current model")
-
-            effort = self._thread_effort or self.state.selected_effort
-            collaboration_settings: dict[str, Any] = {
-                "model": model,
-                "developer_instructions": None,
-            }
-            if effort:
-                collaboration_settings["reasoning_effort"] = effort
-
-            await self.app_server.request(
-                "thread/settings/update",
-                {
-                    "threadId": thread_id,
-                    "collaborationMode": {
-                        "mode": mode,
-                        "settings": collaboration_settings,
-                    },
-                },
-                timeout_seconds=30,
-            )
-        finally:
-            if unsubscribe and not self.is_busy:
-                await self._unsubscribe_thread(source="collaboration_mode_update")
-
-        self._collaboration_mode = mode
-        self._thread_model = model
-        self._thread_effort = effort
-        logger.info(
-            "Codex collaboration mode updated",
-            extra={
-                "event": "codex.thread.collaboration_mode.updated",
-                "collaboration_mode": mode,
-                "model": model,
-                "effort": effort,
-                **self._thread_log_fields(thread_id),
-            },
-        )
-
-    async def _list_collaboration_mode_presets(self) -> dict[str, dict[str, Any]]:
-        if self._collaboration_mode_presets is not None:
-            return self._collaboration_mode_presets
-        try:
-            result = await self.app_server.request(
-                "collaborationMode/list",
-                {},
-                timeout_seconds=30,
-            )
-        except RpcError as exc:
-            raise CollaborationModeUnavailableError(
-                "Codex app-server does not support collaboration modes"
-            ) from exc
-
-        data = result.get("data")
-        if not isinstance(data, list):
-            raise RuntimeError("Codex app-server returned an invalid collaboration mode list")
-        presets: dict[str, dict[str, Any]] = {}
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            mode = item.get("mode")
-            if mode in {"plan", "default"}:
-                presets[mode] = item
-        if not {"plan", "default"}.issubset(presets):
-            raise CollaborationModeUnavailableError(
-                "Codex app-server does not provide both Plan and Default modes"
-            )
-        self._collaboration_mode_presets = presets
-        return presets
-
-    def _capture_thread_settings(self, response: dict[str, Any]) -> None:
-        thread = response.get("thread")
-        thread = thread if isinstance(thread, dict) else {}
-        thread_settings = response.get("threadSettings")
-        if isinstance(thread_settings, dict):
-            thread = {**thread, **thread_settings}
-        model = response.get("model") or thread.get("model")
-        effort = response.get("reasoningEffort") or thread.get("reasoningEffort")
-        collaboration_mode = response.get("collaborationMode")
-        if not isinstance(collaboration_mode, dict):
-            collaboration_mode = thread.get("collaborationMode")
-        settings = collaboration_mode.get("settings") if isinstance(collaboration_mode, dict) else None
-        settings = settings if isinstance(settings, dict) else {}
-        model = model or settings.get("model")
-        effort = effort or settings.get("reasoning_effort")
-        if isinstance(model, str) and model:
-            self._thread_model = model
-        if isinstance(effort, str) and effort:
-            self._thread_effort = effort
-        if "serviceTier" in response:
-            tier = response.get("serviceTier")
-            self._thread_service_tier = tier if isinstance(tier, str) and tier else None
-        elif "serviceTier" in thread:
-            tier = thread.get("serviceTier")
-            self._thread_service_tier = tier if isinstance(tier, str) and tier else None
-
-        mode = collaboration_mode.get("mode") if isinstance(collaboration_mode, dict) else None
-        if mode in {"plan", "default"}:
-            self._collaboration_mode = mode
-        elif "collaborationMode" in response or "collaborationMode" in thread:
-            self._collaboration_mode = "default"
 
     def _update_pending_prompt(self, message_id: int | None) -> None:
         pending = self.state.pending_turn
@@ -2234,147 +1437,9 @@ class CodexSession:
             await self._unsubscribe_thread(source="turn_recovery")
             return False
 
-    async def _read_persisted_turn(self, thread_id: str, turn_id: str) -> dict[str, Any] | None:
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        for _ in range(20):
-            params: dict[str, Any] = {
-                "threadId": thread_id,
-                "limit": 100,
-                "sortDirection": "desc",
-                "itemsView": "notLoaded",
-            }
-            if cursor is not None:
-                params["cursor"] = cursor
-            result = await self.app_server.request("thread/turns/list", params, timeout_seconds=60)
-            data = result.get("data")
-            if not isinstance(data, list):
-                raise RuntimeError("Codex app-server returned invalid turn history")
-            for turn in data:
-                if isinstance(turn, dict) and turn.get("id") == turn_id:
-                    return turn
-            next_cursor = result.get("nextCursor")
-            if next_cursor is None:
-                return None
-            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
-                raise RuntimeError("Codex app-server returned an invalid turn-history cursor")
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
-        raise RuntimeError("Codex app-server turn history exceeded the recovery page limit")
 
-    async def last_assistant_message(self, thread_id: str) -> str:
-        """Return the latest user-visible assistant message without resuming the thread."""
-        async with asyncio.timeout(20):
-            await self._ensure_app_server()
-            result = await self.app_server.request(
-                "thread/turns/list",
-                {
-                    "threadId": thread_id,
-                    "limit": 20,
-                    "sortDirection": "desc",
-                    "itemsView": "notLoaded",
-                },
-                timeout_seconds=15,
-            )
-            turns = result.get("data")
-            if not isinstance(turns, list):
-                raise RuntimeError("Codex app-server returned invalid turn history")
-            for turn in turns:
-                turn_id = turn.get("id") if isinstance(turn, dict) else None
-                if not isinstance(turn_id, str) or not turn_id:
-                    continue
-                text = await self._read_turn_text(
-                    thread_id,
-                    turn_id,
-                    timeout_seconds=15,
-                )
-                if text:
-                    return text
-        return ""
 
-    async def _read_turn_text(
-        self,
-        thread_id: str,
-        turn_id: str | None,
-        *,
-        timeout_seconds: int = 60,
-    ) -> str:
-        if not turn_id:
-            return ""
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        messages: list[dict[str, Any]] = []
-        plans: list[dict[str, Any]] = []
-        reviews: list[dict[str, Any]] = []
-        for _ in range(20):
-            params: dict[str, Any] = {
-                "threadId": thread_id,
-                "turnId": turn_id,
-                "limit": 100,
-                "sortDirection": "asc",
-            }
-            if cursor is not None:
-                params["cursor"] = cursor
-            result = await self.app_server.request(
-                "thread/items/list",
-                params,
-                timeout_seconds=timeout_seconds,
-            )
-            data = result.get("data")
-            if not isinstance(data, list):
-                raise RuntimeError("Codex app-server returned invalid turn items")
-            for entry in data:
-                item = entry.get("item") if isinstance(entry, dict) else None
-                if isinstance(item, dict) and item.get("type") == "agentMessage":
-                    messages.append(item)
-                elif isinstance(item, dict) and item.get("type") == "plan":
-                    plans.append(item)
-                elif isinstance(item, dict) and item.get("type") == "exitedReviewMode":
-                    reviews.append(item)
-            next_cursor = result.get("nextCursor")
-            if next_cursor is None:
-                break
-            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
-                raise RuntimeError("Codex app-server returned an invalid item-history cursor")
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
-        else:
-            raise RuntimeError("Codex app-server item history exceeded the recovery page limit")
 
-        final_plan = next(
-            (
-                item["text"].strip()
-                for item in reversed(plans)
-                if isinstance(item.get("text"), str) and item["text"].strip()
-            ),
-            None,
-        )
-        if final_plan:
-            return final_plan
-
-        final_messages = [item for item in messages if item.get("phase") == "final_answer"]
-        if final_messages:
-            text = final_messages[-1].get("text")
-            if isinstance(text, str) and text.strip():
-                return text.strip()
-        final_review = next(
-            (
-                item["review"].strip()
-                for item in reversed(reviews)
-                if isinstance(item.get("review"), str) and item["review"].strip()
-            ),
-            None,
-        )
-        if final_review:
-            return final_review
-        text = messages[-1].get("text") if messages else None
-        return text.strip() if isinstance(text, str) else ""
-
-    @staticmethod
-    def _turn_error_message(turn: dict[str, Any]) -> str | None:
-        error = turn.get("error")
-        message = error.get("message") if isinstance(error, dict) else None
-        return message if isinstance(message, str) and message else None
 
     @property
     def language(self) -> str:
@@ -2629,10 +1694,7 @@ class CodexSession:
         self._goal = None
         self._goal_thread_id = None
         self._goal_prompt_message_id = None
-        self._collaboration_mode = "default"
-        self._thread_model = None
-        self._thread_effort = None
-        self._thread_service_tier = None
+        self.settings_manager.reset_thread_settings()
         self._clear_turn_messages()
         self.state_store.save(self.state)
 
@@ -3635,11 +2697,7 @@ class CodexSession:
         self._recovered_turn_id = None
         self._loaded_thread_id = None
         self._background_terminal_api_supported = None
-        self._collaboration_mode = "default"
-        self._thread_model = None
-        self._thread_effort = None
-        self._thread_service_tier = None
-        self._collaboration_mode_presets = None
+        self.settings_manager.reset_thread_settings(clear_presets=True)
         self._goal = None
         self._goal_thread_id = None
         self._goal_prompt_message_id = None
@@ -3745,10 +2803,7 @@ class CodexSession:
         self._loaded_thread_id = None
         self._clear_turn_messages()
         self._clear_active_command_executions()
-        self._collaboration_mode = "default"
-        self._thread_model = None
-        self._thread_effort = None
-        self._thread_service_tier = None
+        self.settings_manager.reset_thread_settings()
         self.state.thread_id = None
         self._goal = None
         self._goal_thread_id = None
@@ -3775,14 +2830,8 @@ class CodexSession:
         self._goal = None
         self._goal_thread_id = None
         self._goal_prompt_message_id = None
-        previous_collaboration_mode = self._collaboration_mode
-        previous_thread_model = self._thread_model
-        previous_thread_effort = self._thread_effort
-        previous_service_tier = self._thread_service_tier
-        self._collaboration_mode = "default"
-        self._thread_model = None
-        self._thread_effort = None
-        self._thread_service_tier = None
+        previous_thread_settings = self.settings_manager.snapshot_thread_settings()
+        self.settings_manager.reset_thread_settings()
         self.state.thread_id = thread_id
         self.state.cwd = str(cwd)
         self.state_store.save(self.state)
@@ -3794,10 +2843,7 @@ class CodexSession:
             self._loaded_thread_id = None
             self.state.thread_id = previous_thread_id
             self.state.cwd = previous_cwd
-            self._collaboration_mode = previous_collaboration_mode
-            self._thread_model = previous_thread_model
-            self._thread_effort = previous_thread_effort
-            self._thread_service_tier = previous_service_tier
+            self.settings_manager.restore_thread_settings(previous_thread_settings)
             self._goal = previous_goal
             self._goal_thread_id = previous_goal_thread_id
             self._goal_prompt_message_id = previous_goal_prompt_message_id
@@ -3929,11 +2975,11 @@ class CodexSession:
             title = title[:117].rstrip() + "…"
         model = thread.get("model")
         if not isinstance(model, str) or not model:
-            model = self.state.selected_model or self.config.codex_model or self._text("common.values.default_codex_model")
+            model = self.settings_manager.selected_model or self.config.codex_model or self._text("common.values.default_codex_model")
         effort = thread.get("reasoningEffort")
         models_for_status: list[CodexModel] | None = None
         if not isinstance(effort, str) or not effort:
-            effort = self.state.selected_effort
+            effort = self.settings_manager.selected_effort
         if not effort:
             try:
                 models_for_status = await self.list_models()
@@ -3953,7 +2999,7 @@ class CodexSession:
         model = f"{model} ({effort or self._text('status.values.effort_unknown')})"
         service_tier_id = thread.get("serviceTier")
         if not isinstance(service_tier_id, str) or not service_tier_id:
-            service_tier_id = self._thread_service_tier or self.state.selected_service_tier
+            service_tier_id = self.settings_manager.thread_service_tier or self.settings_manager.selected_service_tier
         if not service_tier_id:
             try:
                 if models_for_status is None:
@@ -4001,7 +3047,7 @@ class CodexSession:
         short_limit = self._status_rate_limit(rate_limits, 300)
         weekly_limit = self._status_rate_limit(rate_limits, 10080)
         collaboration_mode_key = (
-            f"status.values.collaboration_mode_{self._collaboration_mode}"
+            f"status.values.collaboration_mode_{self.settings_manager.collaboration_mode}"
             if self.state.thread_id
             else "common.values.no_active_chat"
         )
@@ -4138,8 +3184,8 @@ class CodexSession:
                         self.state.cwd = str(self._validated_workspace_path(Path(self.state.cwd)))
                     else:
                         self.state.cwd = str(self.working_directory)
-                    if self._collaboration_mode not in {"plan", "default"}:
-                        self._collaboration_mode = "default"
+                    if self.settings_manager.collaboration_mode not in {"plan", "default"}:
+                        self.settings_manager.reset_collaboration_mode()
                     self._loaded_thread_id = thread_id
                     self.state_store.save(self.state)
                     try:
@@ -4163,10 +3209,7 @@ class CodexSession:
                         self._goal = None
                         self._goal_thread_id = None
                         self._goal_prompt_message_id = None
-                        self._collaboration_mode = "default"
-                        self._thread_model = None
-                        self._thread_effort = None
-                        self._thread_service_tier = None
+                        self.settings_manager.reset_thread_settings()
                         self.state_store.save(self.state)
                     elif _is_active_thread_writer_error(exc):
                         logger.info(
@@ -4209,10 +3252,7 @@ class CodexSession:
                     self._goal = None
                     self._goal_thread_id = None
                     self._goal_prompt_message_id = None
-                    self._collaboration_mode = "default"
-                    self._thread_model = None
-                    self._thread_effort = None
-                    self._thread_service_tier = None
+                    self.settings_manager.reset_thread_settings()
                     self._loaded_thread_id = None
                     self.state_store.save(self.state)
 
@@ -4236,8 +3276,8 @@ class CodexSession:
             model = self._effective_model()
             if model:
                 params["model"] = model
-            if self.state.selected_service_tier:
-                params["serviceTier"] = self.state.selected_service_tier
+            if self.settings_manager.selected_service_tier:
+                params["serviceTier"] = self.settings_manager.selected_service_tier
             result = await self.app_server.request("thread/start", params, timeout_seconds=90)
             self._capture_thread_settings(result)
             thread = result.get("thread", {})
@@ -4250,14 +3290,14 @@ class CodexSession:
             self._goal_prompt_message_id = None
             self.state.cwd = str(self.working_directory)
             memory_mode = None
-            if self.state.selected_memory_mode is not None:
+            if self.settings_manager.selected_memory_mode is not None:
                 try:
                     await self.app_server.request(
                         "thread/memoryMode/set",
-                        {"threadId": thread_id, "mode": self.state.selected_memory_mode},
+                        {"threadId": thread_id, "mode": self.settings_manager.selected_memory_mode},
                         timeout_seconds=30,
                     )
-                    memory_mode = self.state.selected_memory_mode
+                    memory_mode = self.settings_manager.selected_memory_mode
                 except Exception as exc:
                     log_exception(
                         logger,
@@ -4267,8 +3307,8 @@ class CodexSession:
                         level=logging.WARNING,
                         **self._thread_log_fields(thread_id),
                     )
-            if self._collaboration_mode not in {"plan", "default"}:
-                self._collaboration_mode = "default"
+            if self.settings_manager.collaboration_mode not in {"plan", "default"}:
+                self.settings_manager.reset_collaboration_mode()
             self._loaded_thread_id = thread_id
             self.state_store.save_thread(
                 thread_id,
@@ -4710,10 +3750,7 @@ class CodexSession:
         self._goal_prompt_message_id = None
         if saved.cwd is not None:
             self.state.cwd = saved.cwd
-        self._collaboration_mode = "default"
-        self._thread_model = None
-        self._thread_effort = None
-        self._thread_service_tier = None
+        self.settings_manager.reset_thread_settings()
         self._loaded_thread_id = None
         self._clear_turn_messages()
 
