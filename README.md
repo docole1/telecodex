@@ -13,7 +13,7 @@ TeleCodex uses your ChatGPT sign-in through Codex CLI and does not require an Op
 ## Requirements
 
 - A Linux environment with Python 3.12 or newer.
-- Codex CLI installed and available to the Linux user that will run TeleCodex. TeleCodex has been tested with Codex CLI `0.167.0`; newer versions have not yet been verified.
+- Codex CLI installed and available to the Linux user that will run TeleCodex.
 - A ChatGPT account with Codex access, signed in through Codex CLI as that same Linux user.
 - A Telegram bot token and the numeric Telegram user IDs allowed to operate the bot.
 
